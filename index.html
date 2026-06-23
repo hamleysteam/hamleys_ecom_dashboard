@@ -201,6 +201,88 @@ tr.ttl td{background:#F5F5F5;font-weight:600}
 #toast{position:fixed;bottom:20px;right:20px;background:#1A1A1A;color:var(--wht);border-radius:10px;padding:11px 16px;font-size:12px;z-index:99999;border-left:3px solid var(--red);display:none;max-width:340px;box-shadow:var(--shadow-md)}
 
 @keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+
+/* ══════════════════════════════════════════════════════
+   MOBILE — 768px breakpoint
+════════════════════════════════════════════════════════ */
+.sb-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:199;opacity:0;transition:opacity .25s}
+.sb-overlay.on{opacity:1}
+.sb-hamburger{display:none;background:none;border:none;cursor:pointer;padding:6px 8px;border-radius:6px;color:var(--blk);line-height:1}
+.sb-hamburger:hover{background:var(--hi)}
+.sb-hamburger span{display:block;width:20px;height:2px;background:currentColor;margin:4px 0;border-radius:2px;transition:transform .2s,opacity .2s}
+
+@media(max-width:768px){
+  :root{--side:0px}
+
+  /* Sidebar becomes a slide-in drawer */
+  .sidebar{
+    transform:translateX(-260px);
+    width:260px;
+    transition:transform .25s ease;
+    box-shadow:none;
+  }
+  .sidebar.open{
+    transform:translateX(0);
+    box-shadow:4px 0 20px rgba(0,0,0,.25);
+  }
+  .sb-overlay{display:block}
+
+  /* Main fills full width */
+  .main-wrap{margin-left:0}
+
+  /* Top bar */
+  .sb-hamburger{display:flex;flex-direction:column;justify-content:center;margin-right:4px}
+  .top-bar{padding:8px 14px;gap:8px;flex-wrap:wrap}
+  .tb-right{margin-left:0;width:100%;overflow-x:auto;padding-bottom:2px}
+  .ch-pills{flex-wrap:nowrap;overflow-x:auto;padding-bottom:2px;-webkit-overflow-scrolling:touch}
+  .ch-pill{font-size:10px;padding:4px 10px;flex-shrink:0}
+  .data-badge{font-size:10px;flex-shrink:0}
+
+  /* Content padding */
+  .main{padding:14px 12px 48px}
+
+  /* KPI grid — 2 cols on mobile */
+  .kg{grid-template-columns:repeat(2,1fr);gap:1px}
+  .kv{font-size:18px}
+
+  /* Tables — horizontal scroll */
+  .tw{overflow-x:auto;-webkit-overflow-scrolling:touch;border-radius:10px}
+  table{min-width:480px}
+  th,td{padding:7px 9px;font-size:11px;white-space:nowrap}
+
+  /* Grids → 1 col */
+  .g2,.g3,.tg,.dc3,.ag,.fr,.dp{grid-template-columns:1fr}
+  .ug{grid-template-columns:1fr}
+
+  /* Section headers */
+  .sh{flex-wrap:wrap;gap:4px}
+  .st{font-size:13px}
+
+  /* Targets */
+  .tg{grid-template-columns:1fr 1fr}
+
+  /* Upload cards */
+  .uc{padding:12px}
+
+  /* Footer */
+  .main-footer{flex-direction:column;gap:4px;text-align:center;padding:10px 14px}
+
+  /* Toast */
+  #toast{left:10px;right:10px;bottom:10px;max-width:none}
+
+  /* Login */
+  .lb{width:94vw;margin:auto}
+
+  /* Export button in top bar — smaller */
+  .top-bar > button{font-size:11px;padding:5px 10px}
+}
+
+@media(max-width:480px){
+  .kg{grid-template-columns:1fr}
+  .tg{grid-template-columns:1fr}
+  .kv{font-size:16px}
+  .tb-page{font-size:13px}
+}
 </style>
 </head>
 <body>
@@ -220,7 +302,8 @@ tr.ttl td{background:#F5F5F5;font-weight:600}
 </div>
 <div id="app">
   <!-- SIDEBAR -->
-  <aside class="sidebar">
+  <div class="sb-overlay" id="sb-overlay" onclick="closeSidebar()"></div>
+  <aside class="sidebar" id="sidebar">
     <div class="sb-brand">
       <span class="sb-star">⭐</span>
       <div class="sb-name">Hamleys</div>
@@ -265,6 +348,7 @@ tr.ttl td{background:#F5F5F5;font-weight:600}
   <!-- MAIN WRAP -->
   <div class="main-wrap">
     <div class="top-bar">
+      <button class="sb-hamburger" id="hamburger" onclick="toggleSidebar()" aria-label="Menu"><span></span><span></span><span></span></button>
       <div>
         <div class="tb-page" id="tb-page">Weekly Review</div>
         <div class="tb-sub" id="hdr-d">No data loaded</div>
@@ -393,7 +477,7 @@ const SUPA={
   key:"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpmZXV4aGppYmFuYXVmc2FnZGJtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA2NTM0OTAsImV4cCI6MjA5NjIyOTQ5MH0.6APcfYAV1PgvSK_wjymB2QR9IHg_AITGjvk9KMV5RBc"
 };
 // Shared/team storage via Supabase is currently disabled — set to true to re-enable.
-const USE_SUPABASE=false; // switched to GitHub data.json sharing
+const USE_SUPABASE=true;
 
 async function supaFetch(path,method,body){
   try{
@@ -1001,20 +1085,33 @@ function parseStoreTracker(wb){
     return -1;
   };
   const nmC=idxOf("store name","store","name"),cdC=idxOf("store code","code"),
-    lvC=idxOf("live sku","live skus","active skus","live"),
-    ordC=idxOf("orders","order"),revC=idxOf("revenue","rev","booking rev"),
+    lvC=idxOf("live sku","live skus","active sku","sku count"),
+    ordC=idxOf("orders","order count"),revC=idxOf("revenue","rev","booking rev"),
     fillC=idxOf("fill rate","fill"),canC=idxOf("cancel","cancellation"),
-    cityC=idxOf("city","location");
+    cityC=idxOf("city","location"),
+    statC=idxOf("status","live status","is live","live/not","active/inactive"),
+    reasonC=idxOf("reason","not live reason","reason for","remarks","remark","comment");
   const recs=[];
   for(let i=hi+1;i<raw.length;i++){
     const r=raw[i];if(!r)continue;
     const name=String(r[nmC>=0?nmC:0]||"").trim();
-    if(!name||["total","grand total"].includes(name.toLowerCase()))continue;
+    if(!name||["total","grand total",""].includes(name.toLowerCase()))continue;
+    const statRaw=statC>=0?String(r[statC]||"").trim():"";
+    const liveSkus=toN(r[lvC>=0?lvC:0]);
+    // Determine live status: from status col if present, else from live SKU count
+    let isLive=liveSkus>0;
+    if(statRaw){
+      const sl=statRaw.toLowerCase();
+      isLive=sl.includes("live")||sl.includes("yes")||sl.includes("active")||sl==="1"||sl==="true";
+      if(sl.includes("not live")||sl.includes("no")||sl.includes("inactive")||sl==="0")isLive=false;
+    }
     recs.push({name,code:String(r[cdC>=0?cdC:0]||"").trim(),
       city:String(r[cityC>=0?cityC:""]||"").trim(),
-      live_skus:toN(r[lvC>=0?lvC:0]),orders:toN(r[ordC>=0?ordC:0]),
+      live_skus:liveSkus,orders:toN(r[ordC>=0?ordC:0]),
       revenue:toN(r[revC>=0?revC:0]),fill_rate:toN(r[fillC>=0?fillC:0]),
-      cancel_pct:toN(r[canC>=0?canC:0])});
+      cancel_pct:toN(r[canC>=0?canC:0]),
+      status:statRaw,isLive:isLive,
+      reason:reasonC>=0?String(r[reasonC]||"").trim():""});
   }
   return{recs,rows:recs.length,minDate:null,maxDate:null};
 }
@@ -1597,19 +1694,53 @@ function tabDiscounts(){
 function tabStores(){
   var st=FD.store_tracker;
   if(!st)return'<div class="al al-a">Upload Store Live Tracker to see store data. Go to ↑ Upload tab.</div>';
-  var recs=st.recs||[];if(!recs.length)return'<div class="al al-r">No store rows detected. Check column headers.</div>';
-  var totLive=recs.reduce(function(s,r){return s+r.live_skus;},0);
+  var recs=st.recs||[];if(!recs.length)return'<div class="al al-r">No store rows detected. Check column headers in Verify Data tab.</div>';
+  var liveRecs=recs.filter(function(r){return r.isLive;});
+  var notLiveRecs=recs.filter(function(r){return!r.isLive;});
+  var totSKUs=recs.reduce(function(s,r){return s+r.live_skus;},0);
   var totOrd=recs.reduce(function(s,r){return s+r.orders;},0);
   var totRev=recs.reduce(function(s,r){return s+r.revenue;},0);
+  var hasReason=recs.some(function(r){return r.reason;});
   var s='<div class="sec"><div class="sh"><span class="sn">ST</span><span class="st">Store Live Tracker</span><span class="ss">'+recs.length+' stores</span><button onclick="dlStores()" style="margin-left:auto;background:var(--bg);border:1.5px solid var(--div);border-radius:6px;padding:3px 10px;font-size:11px;cursor:pointer;color:#555;font-family:var(--sans)">⬇ Excel</button></div>';
-  s+='<div class="kg">'+kpi("Stores",fN(recs.length))+kpi("Total Live SKUs",fN(totLive))+(totOrd>0?kpi("Total Orders",fN(totOrd)):"")+(totRev>0?kpi("Total Revenue",fL(totRev)):"")+"</div>";
-  s+='<div class="tw"><table><thead>'+mkTH(["Store","City","Live SKUs","Orders","Revenue","Fill Rate","Cancel%"])+"</thead><tbody>";
-  var sorted=recs.slice().sort(function(a,b){return(b.revenue||b.orders||b.live_skus)-(a.revenue||a.orders||a.live_skus);});
-  sorted.forEach(function(r){
-    var fr=r.fill_rate>1?r.fill_rate:r.fill_rate*100;var cp=r.cancel_pct>1?r.cancel_pct:r.cancel_pct*100;
+  // KPIs
+  s+='<div class="kg">';
+  s+=kpi("Total Stores",fN(recs.length),"","","","");
+  s+=kpi("Live",'<span style="color:var(--grn);font-size:22px;font-weight:700">'+fN(liveRecs.length)+"</span>","","","",fP(recs.length?liveRecs.length/recs.length*100:0)+" of total");
+  s+=kpi("Not Live",'<span style="color:var(--red);font-size:22px;font-weight:700">'+fN(notLiveRecs.length)+"</span>","","","",notLiveRecs.length?notLiveRecs.length+" stores need attention":"All stores live ✓");
+  s+=kpi("Total Live SKUs",fN(totSKUs),"","","",liveRecs.length?"Avg "+fN(Math.round(totSKUs/liveRecs.length))+" per live store":"");
+  if(totOrd>0)s+=kpi("Total Orders",fN(totOrd));
+  if(totRev>0)s+=kpi("Total Revenue",fL(totRev));
+  s+="</div>";
+  // Not-live stores section
+  if(notLiveRecs.length){
+    s+='<div class="sh" style="margin-top:6px"><span class="sn" style="background:var(--ebg);color:var(--red)">⚠</span><span class="st">Not Live ('+notLiveRecs.length+' stores)</span></div>';
+    var nlHdrs=["Store","City","Live SKUs"];
+    if(hasReason)nlHdrs.push("Reason");
+    s+='<div class="tw"><table><thead>'+mkTH(nlHdrs)+"</thead><tbody>";
+    notLiveRecs.slice().sort(function(a,b){return(a.name||"").localeCompare(b.name||"");}).forEach(function(r){
+      var row=[r.name||r.code||"—",r.city||"—",r.live_skus>0?fN(r.live_skus):'<span style="color:var(--red)">0</span>'];
+      if(hasReason)row.push(r.reason||'<span style="color:#bbb">—</span>');
+      s+=mkTD(row,"");
+    });
+    s+="</tbody></table></div>";
+  }
+  // All stores table
+  s+='<div class="sh" style="margin-top:8px"><span class="sn">↓</span><span class="st">All Stores</span></div>';
+  s+='<div class="tw"><table><thead>'+mkTH(["Store","City","Status","Live SKUs","Orders","Revenue","Fill Rate%","Cancel%"])+"</thead><tbody>";
+  recs.slice().sort(function(a,b){
+    if(a.isLive!==b.isLive)return a.isLive?-1:1;
+    return(b.revenue||b.live_skus||b.orders)-(a.revenue||a.live_skus||a.orders);
+  }).forEach(function(r){
+    var fr=r.fill_rate>1?r.fill_rate:r.fill_rate*100;
+    var cp=r.cancel_pct>1?r.cancel_pct:r.cancel_pct*100;
     var frC=fr>0?(fr>=95?"var(--grn)":fr>=85?"var(--amb)":"var(--red)"):"#bbb";
     var cpC=cp>0?(cp<=5?"var(--grn)":cp<=15?"var(--amb)":"var(--red)"):"#bbb";
-    s+=mkTD([r.name||(r.code||"—"),r.city||"—",r.live_skus>0?fN(r.live_skus):"—",r.orders>0?fN(r.orders):"—",r.revenue>0?fL(r.revenue):"—",fr>0?'<span style="color:'+frC+'">'+fP(fr)+"</span>":"—",cp>0?'<span style="color:'+cpC+'">'+fP(cp)+"</span>":"—"],"");
+    var statusBadge=r.isLive?'<span style="color:var(--grn);font-weight:600;font-size:11px">● Live</span>':'<span style="color:var(--red);font-size:11px">● Not Live</span>';
+    s+=mkTD([r.name||r.code||"—",r.city||"—",statusBadge,
+      r.live_skus>0?fN(r.live_skus):'<span style="color:var(--red)">0</span>',
+      r.orders>0?fN(r.orders):"—",r.revenue>0?fL(r.revenue):"—",
+      fr>0?'<span style="color:'+frC+'">'+fP(fr)+"</span>":"—",
+      cp>0?'<span style="color:'+cpC+'">'+fP(cp)+"</span>":"—"],!r.isLive?"":"");
   });
   return s+"</tbody></table></div></div>";
 }
@@ -2093,9 +2224,9 @@ function dlSKUs(){
 
 function dlStores(){
   if(!FD.store_tracker)return showToast('No Store Tracker loaded');
-  var hdr=['Store','City','Live SKUs','Orders','Revenue','Fill Rate%','Cancel%'];
+  var hdr=['Store','City','Status','Live SKUs','Orders','Revenue','Fill Rate%','Cancel%','Reason'];
   var rows=[hdr];
-  (FD.store_tracker.recs||[]).forEach(function(r){rows.push([r.name||r.code,r.city,r.live_skus,r.orders,Math.round(r.revenue||0),+((r.fill_rate>1?r.fill_rate:r.fill_rate*100)||0).toFixed(1),+((r.cancel_pct>1?r.cancel_pct:r.cancel_pct*100)||0).toFixed(1)]);});
+  (FD.store_tracker.recs||[]).forEach(function(r){rows.push([r.name||r.code,r.city,r.isLive?'Live':'Not Live',r.live_skus,r.orders,Math.round(r.revenue||0),+((r.fill_rate>1?r.fill_rate:r.fill_rate*100)||0).toFixed(1),+((r.cancel_pct>1?r.cancel_pct:r.cancel_pct*100)||0).toFixed(1),r.reason||'']);});
   dlXLS(rows,'Stores','Hamleys_Stores');
 }
 
@@ -2118,7 +2249,21 @@ function parseDailyTracker(wb){
 
   // ── Sheet: June 2026 Actuals (overall daily) ─────────
   var shA=null;
-  wb.SheetNames.forEach(function(n){if(n.toLowerCase().includes('actuals')||n.toLowerCase().includes('june 2026'))shA=wb.Sheets[n];});
+  wb.SheetNames.forEach(function(n){
+    var nl=n.toLowerCase();
+    if(nl.includes('actuals')||nl.includes('actual')||nl.includes('daily')||nl.includes('tracker')||nl.match(/\d{4}\s*(actuals?)?/))shA=wb.Sheets[n];
+  });
+  // Fallback: use sheet with most rows if still not found
+  if(!shA&&wb.SheetNames.length>0){
+    var best=null,bestRows=0;
+    wb.SheetNames.forEach(function(n){
+      var nl=n.toLowerCase();
+      if(nl.includes('campaign')||nl.includes('timeline')||nl.includes('change'))return;
+      var raw0=XLSX.utils.sheet_to_json(wb.Sheets[n],{header:1,raw:true,defval:null});
+      if(raw0.length>bestRows){bestRows=raw0.length;best=n;}
+    });
+    if(best)shA=wb.Sheets[best];
+  }
   if(shA){
     var raw=XLSX.utils.sheet_to_json(shA,{header:1,raw:true,defval:null});
     // Find header row (has 'Sessions' or 'session')
@@ -2183,7 +2328,7 @@ function parseDailyTracker(wb){
     }
   }
 
-  out.rows=out.recs.length;
+  out.rows=out.recs.length+Object.keys(out.campaigns).length;
   if(out.recs.length){
     out.maxDate=out.recs[out.recs.length-1].date;
     out.minDate=out.recs[0].date;
@@ -2194,7 +2339,9 @@ function parseDailyTracker(wb){
 // ═══ TAB: CAMPAIGN ═══════════════════════════════════════
 function tabCampaign(){
   var dt=FD.daily_tracker;
-  if(!dt||!dt.recs||!dt.recs.length)return noData('Upload Daily Tracker via \u2191 Upload tab');
+  if(!dt)return noData('Upload Daily Tracker via \u2191 Upload tab');
+  var hasCampData=Object.keys(dt.campaigns||{}).length>0;
+  if(!dt.recs.length&&!hasCampData)return noData('Daily Tracker uploaded but no data detected — check sheet names match: "June 2026 Actuals" and "June Campaign"');
   var recs=dt.recs,camps=dt.campaigns;
   var s='<div class="sec">';
 
@@ -2374,6 +2521,25 @@ function loadGithubData(){
   showToast("\u2601 Team data loaded (by "+window._githubData._meta.by+")");
   window._githubData=null;
 }
+
+// ═══ MOBILE SIDEBAR ══════════════════════════════════════
+function toggleSidebar(){
+  var sb=document.getElementById('sidebar');
+  var ov=document.getElementById('sb-overlay');
+  var isOpen=sb.classList.contains('open');
+  if(isOpen)closeSidebar();
+  else{sb.classList.add('open');ov.classList.add('on');}
+}
+function closeSidebar(){
+  var sb=document.getElementById('sidebar');
+  var ov=document.getElementById('sb-overlay');
+  sb.classList.remove('open');
+  ov.classList.remove('on');
+}
+// Close sidebar when a nav item is tapped on mobile
+document.getElementById('sb-nav').addEventListener('click',function(e){
+  if(e.target.closest('[data-tab]')&&window.innerWidth<=768)closeSidebar();
+});
 </script>
 </body>
 </html>
