@@ -229,6 +229,7 @@ tr.ttl td{background:#F5F5F5;font-weight:600}
     <nav class="sb-nav" id="sb-nav">
       <div class="sb-section">Analytics</div>
       <button class="sb-item on" data-tab="weekly"><span class="sb-icon">📅</span>Weekly Review</button>
+      <button class="sb-item" data-tab="campaign"><span class="sb-icon">📊</span>Campaign</button>
       <button class="sb-item" data-tab="targets"><span class="sb-icon">🎯</span>Targets</button>
       <button class="sb-item" data-tab="overview"><span class="sb-icon">📊</span>Overview</button>
       <button class="sb-item" data-tab="channels"><span class="sb-icon">🛒</span>Channels</button>
@@ -356,6 +357,25 @@ async function checkSess(){
 function showApp(){
   document.getElementById("ls").style.display="none";
   document.getElementById("app").style.display="block";
+  // Try to auto-load data.json from GitHub Pages (team sharing)
+  fetch("./data.json?t="+Date.now()).then(function(r){
+    if(r.ok)return r.json();throw new Error("no file");
+  }).then(function(data){
+    if(data&&data._meta&&data._fd){
+      // Only auto-load if local data is empty
+      var hasLocal=Object.keys(FD).some(function(k){return FD[k]&&FD[k].rows>0;});
+      if(!hasLocal){
+        Object.assign(FD,data._fd);
+        M=compute(FD);
+        if(M)updateHdr();
+        render();
+        showToast("☁ Team data loaded (by "+data._meta.by+" on "+data._meta.date+")");
+      }else{
+        showToast("☁ Newer team export available — go to Upload → Load Team Data");
+        window._githubData=data;
+      }
+    }
+  }).catch(function(){});// silently ignore if no data.json
   // Sidebar user
   const initials=CU.name.split(" ").map(w=>w[0]).join("").toUpperCase().slice(0,2);
   document.getElementById("sb-avatar").textContent=initials;
@@ -373,7 +393,7 @@ const SUPA={
   key:"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpmZXV4aGppYmFuYXVmc2FnZGJtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA2NTM0OTAsImV4cCI6MjA5NjIyOTQ5MH0.6APcfYAV1PgvSK_wjymB2QR9IHg_AITGjvk9KMV5RBc"
 };
 // Shared/team storage via Supabase is currently disabled — set to true to re-enable.
-const USE_SUPABASE=true;
+const USE_SUPABASE=false; // switched to GitHub data.json sharing
 
 async function supaFetch(path,method,body){
   try{
@@ -754,7 +774,7 @@ const DSR_NAMES={
   awareness:["awareness spends"],roas:["roas"],roas_fb:["roas fb"],roas_gg:["roas google"],
   ga4_sessions:["ga4 sessions"],sessions:["sessions"],pageviews:["pageviews","plp views"],
   pdp_views:["pdp views"],ecom_conv:["ecom conversion","conv %"],users:["users"],
-  target:["booking target"],target_gross:["target"],prepaid_pct:["prepaid orders %","prepaid %"]
+  target:["booking target"],target_gross:["target"],prepaid_pct:["prepaid orders %","prepaid %"],
 };
 // Map our internal key → DSR_FX fallback key
 const DSR_FX_KEY={rev:"rev",mrp:"mrp",net:"net",orders:"ord",units:"uni",disc_pct:"dsc",aov:"aov",
@@ -1051,6 +1071,11 @@ function compute(fd){
   const ajM=DA("ajio",P.mtdS,P.mtdE),ajP=DA("ajio",P.pmS,P.pmE),ajW=DA("ajio",P.wtdS,P.wtdE),ajPW=DA("ajio",P.pwS,P.pwE);
   const amM=DA("amazon",P.mtdS,P.mtdE),amP=DA("amazon",P.pmS,P.pmE);
   const jmM=DA("jiomart",P.mtdS,P.mtdE),jmP=DA("jiomart",P.pmS,P.pmE);
+  // DSR-based LY: filter DSR records to last year same period (lylS–lylE)
+  // Works automatically if the DSR file contains full FY data (Apr 2025 onwards)
+  var hmLY=DA("hm",P.lylS,P.lylE),ajLY=DA("ajio",P.lylS,P.lylE);
+  var amLY=DA("amazon",P.lylS,P.lylE),jmLY=DA("jiomart",P.lylS,P.lylE);
+  var hasDSRLY=hmLY.rev>0||ajLY.rev>0||amLY.rev>0;
   const totalM=(hmM.rev||0)+(ajM.rev||0)+(amM.rev||0)+(jmM.rev||0);
   const totalP=(hmP.rev||0)+(ajP.rev||0)+(amP.rev||0)+(jmP.rev||0);
 
@@ -1128,18 +1153,18 @@ function compute(fd){
     PW:{tot:spw.gross>0?spw.total_d/spw.gross*100:0,store:spw.gross>0?spw.store_d/spw.gross*100:0,coupon:spw.gross>0?spw.coupon/spw.gross*100:0}
   };
   const days=Math.max(1,(new Date(P.mtdE)-new Date(P.mtdS))/86400e3+1);
-  return{P,TGT,maxDate,days,
+  return{P,TGT,maxDate,days,hasDSRLY,
     summary:{totalM,totalP,grossM:sm.gross,bookedM:hmM.rev||0,
       projBooked:(hmM.rev||0)/days*30,projTotal:totalM/days*30,projGross:sm.gross/days*30},
     ch:{
-      hm:{M:hmM,P:hmP,W:hmW,PW:hmPW,
+      hm:{M:hmM,P:hmP,W:hmW,PW:hmPW,LY:hmLY,
         canM:AV("hm",P.mtdS,P.mtdE,"cancel_pct"),canP:AV("hm",P.pmS,P.pmE,"cancel_pct"),
         fillM:AV("hm",P.mtdS,P.mtdE,"fill_rate"),
         aovM:hmM.orders>0?hmM.rev/hmM.orders:0,aovP:hmP.orders>0?hmP.rev/hmP.orders:0,
         aovW:hmW.orders>0?hmW.rev/hmW.orders:0,aovPW:hmPW.orders>0?hmPW.rev/hmPW.orders:0,
         roasM:hmM.spends>0?hmM.rev/hmM.spends:0},
-      ajio:{M:ajM,P:ajP,W:ajW,PW:ajPW,canM:AV("ajio",P.mtdS,P.mtdE,"cancel_pct"),aovM:ajM.orders>0?ajM.rev/ajM.orders:0,aovP:ajP.orders>0?ajP.rev/ajP.orders:0},
-      amazon:{M:amM,P:amP},jiomart:{M:jmM,P:jmP}
+      ajio:{M:ajM,P:ajP,LY:ajLY,W:ajW,PW:ajPW,canM:AV("ajio",P.mtdS,P.mtdE,"cancel_pct"),aovM:ajM.orders>0?ajM.rev/ajM.orders:0,aovP:ajP.orders>0?ajP.rev/ajP.orders:0},
+      amazon:{M:amM,P:amP,LY:amLY},jiomart:{M:jmM,P:jmP,LY:jmLY}
     },
     brands,categories,topSellers,disc,campaigns:(camp&&camp.campaigns)||[]};
 }
@@ -1149,7 +1174,7 @@ let FD={},US={},M=null;
 const FDEFS=[
   {id:"sales_dump",label:"Sales Dump",hint:"Sales_Dump_FY_*.xlsb/.xlsx",icon:"📦"},
   {id:"dsr",label:"DSR Report",hint:"eCom_DSR_Report*.xlsb",icon:"📈"},
-  {id:"campaign",label:"Campaign",hint:"Campaign_Level_analysis.xlsx",icon:"📣"},
+  {id:"daily_tracker",label:"Daily Tracker (Campaign)",hint:"Hamleys_Daily_tracker_*.xlsx",icon:"📊"},
   {id:"store_tracker",label:"Store Live Tracker",hint:"Store_Tracker*.xlsx",icon:"🏪"},
   {id:"sla_cancel",label:"Store SLA & Cancellation",hint:"Store_Performance_SLA*.xlsx",icon:"📋"},
   {id:"fynd_dump",label:"Fynd Dump",hint:"Fynd_Products_*.xlsx",icon:"📚"},
@@ -1223,10 +1248,10 @@ async function handleFile(fid,file){
     let parsed=null;
     if(fid==="sales_dump")parsed=parseDump(wb);
     else if(fid==="dsr")parsed=parseDSR(wb);
-    else if(fid==="campaign")parsed=parseCamp(wb);
     else if(fid==="store_tracker")parsed=parseStoreTracker(wb);
     else if(fid==="sla_cancel")parsed=parseSLACancellation(wb);
     else if(fid==="sales_dump_ly")parsed=parseDump(wb);
+    else if(fid==="daily_tracker")parsed=parseDailyTracker(wb);
     else parsed=parseCatalog(wb);
     FD[fid]=parsed;M=compute(FD);
     const dr=parsed.minDate&&parsed.maxDate?fmtDate(parsed.minDate)+" → "+fmtDate(parsed.maxDate):"";
@@ -1305,7 +1330,9 @@ function tabWeekly(){
     var rev=mSum(c.id,"rev"),nsv=mSum(c.id,"net"),tgt=X.TGT[c.id==="hm"?"booked":c.id]||0;
     var prevMk=P.year+"-"+String(P.monthNum-1).padStart(2,"0");
     var lmtd=((dsr[c.id]&&dsr[c.id].recs)||[]).filter(function(r){var dd=r.date;return dd.startsWith(prevMk)&&parseInt(dd.split("-")[2])<=P.d;}).reduce(function(s,r){return s+(r.rev||0);},0);
-    return{id:c.id,label:c.label,rev:rev,nsv:nsv,tgt:tgt,lmtd:lmtd,orders:mSum(c.id,"orders"),spends:mSum(c.id,"spends")};
+    // DSR LY: query same period last year from DSR records
+    var lyRev=c.id==="hm"?(X.ch.hm.LY&&X.ch.hm.LY.rev||0):c.id==="ajio"?(X.ch.ajio.LY&&X.ch.ajio.LY.rev||0):c.id==="amazon"?(X.ch.amazon.LY&&X.ch.amazon.LY.rev||0):c.id==="jiomart"?(X.ch.jiomart.LY&&X.ch.jiomart.LY.rev||0):0;
+    return{id:c.id,label:c.label,rev:rev,nsv:nsv,tgt:tgt,lmtd:lmtd,lyRev:lyRev,orders:mSum(c.id,"orders"),spends:mSum(c.id,"spends")};
   });
   var totRev=chMTD.reduce(function(s,c){return s+c.rev;},0);
   var totNSV=chMTD.reduce(function(s,c){return s+c.nsv;},0);
@@ -1348,14 +1375,15 @@ function tabWeekly(){
   s+='<div style="display:flex;gap:8px;margin-bottom:10px"><button onclick="dlDumpMTD()" style="background:var(--bg);border:1.5px solid var(--div);border-radius:7px;padding:5px 12px;font-size:11px;cursor:pointer;font-family:var(--sans);color:#555">⬇ Dump MTD Excel</button><button onclick="dlDumpFull()" style="background:var(--bg);border:1.5px solid var(--div);border-radius:7px;padding:5px 12px;font-size:11px;cursor:pointer;font-family:var(--sans);color:#555">⬇ Full Dump Excel</button><button onclick="dlSKUs()" style="background:var(--bg);border:1.5px solid var(--div);border-radius:7px;padding:5px 12px;font-size:11px;cursor:pointer;font-family:var(--sans);color:#555">⬇ All SKUs Excel</button></div>';
   s+='<div class="al al-b" style="font-size:11px;margin-bottom:10px"><strong>Data sources:</strong> Booking/NSV from DSR · Brand/Category breakdowns from Sales Dump (Booked Revenue) · Periods are like-for-like ('+P.prevMonth+' 1–'+P.d+' vs '+P.month+' 1–'+P.d+')</div>';
   s+='<div class="sh"><span class="sn">01</span><span class="st">MTD Performance · '+P.month+" 1–"+P.d+'</span><span class="ss">Booking Rev · NSV · Target · Achievement · vs LMTD</span></div>';
-  s+='<div class="tw"><table><thead>'+mkTH(["Platform","MTD Booking","MTD NSV","Target","Achievement","vs LMTD","Orders"])+"</thead><tbody>";
+  s+='<div class="tw"><table><thead>'+mkTH(["Platform","MTD Booking","MTD NSV","Target","Achv%","vs LMTD","YoY%","Orders"])+"</thead><tbody>";
   chMTD.forEach(function(c,i){
     var achv=c.tgt>0?fP(c.rev/c.tgt*100):"—";
     var col=c.tgt>0?(c.rev/c.tgt>=1?"var(--grn)":c.rev/c.tgt>=0.8?"var(--amb)":"var(--err)"):"inherit";
-    s+=mkTD(["<strong>"+c.label+"</strong>",fL(c.rev),fL(c.nsv),c.tgt?fCr(c.tgt):"—",'<span style="color:'+col+';font-family:var(--mono);font-weight:500">'+achv+"</span>",c.lmtd>0?bdg(chg(c.rev,c.lmtd)):"—",fN(c.orders)],i===0?"t3":"");
+    s+=mkTD(["<strong>"+c.label+"</strong>",fL(c.rev),fL(c.nsv),c.tgt?fCr(c.tgt):"—",'<span style="color:'+col+';font-family:var(--mono);font-weight:500">'+achv+"</span>",c.lmtd>0?bdg(chg(c.rev,c.lmtd)):"—",c.lyRev>0?bdg(chg(c.rev,c.lyRev)):"—",fN(c.orders)],i===0?"t3":"");
   });
   var totAchv=totTgt>0?fP(totRev/totTgt*100):"—";
-  s+=mkTD(["<strong>TOTAL</strong>","<strong>"+fCr(totRev)+"</strong>","<strong>"+fCr(totNSV)+"</strong>",totTgt?"<strong>"+fCr(totTgt)+"</strong>":"—","<strong>"+totAchv+"</strong>",totLMTD>0?bdg(chg(totRev,totLMTD)):"—","—"],"ttl");
+  var totLY=chMTD.reduce(function(s,c){return s+c.lyRev;},0);
+  s+=mkTD(["<strong>TOTAL</strong>","<strong>"+fCr(totRev)+"</strong>","<strong>"+fCr(totNSV)+"</strong>",totTgt?"<strong>"+fCr(totTgt)+"</strong>":"—","<strong>"+totAchv+"</strong>",totLMTD>0?bdg(chg(totRev,totLMTD)):"—",totLY>0?bdg(chg(totRev,totLY)):"—","—"],"ttl");
   s+="</tbody></table></div>";
   // Projection Table
   s+='<div class="sh" style="margin-top:6px"><span class="sn">02</span><span class="st">Run Rate & Projection</span><span class="ss">Need ₹'+(daysLeft>0?fN(Math.max(0,totTgt-totRev)/daysLeft):0)+'/day to hit target</span></div>';
@@ -1712,7 +1740,16 @@ function tabVerify(){
 // ═══ TAB: UPLOAD ════════════════════════════════════════
 function tabUpload(){
   if(!CU||CU.role==="viewer")return'<div class="al al-r">Viewer access — cannot upload files.</div>';
-  var s='<div class="sec"><div class="sh"><span class="sn">↑</span><span class="st">Upload Data Files</span><span class="ss">Fixed column positions · xlsb + xlsx · JSZip-based reader</span></div><div class="ug">';
+  var lastExport=localStorage.getItem("hm_export_meta");
+  var s='<div class="sec"><div class="sh"><span class="sn">↑</span><span class="st">Upload Data Files</span><span class="ss">xlsb + xlsx · JSZip reader</span></div>';
+  s+='<div class="cd" style="margin-bottom:14px;border-left:3px solid var(--amb);background:var(--abg)">';
+  s+='<div style="font-weight:600;font-size:12px;margin-bottom:6px">☁ Team Sharing via GitHub</div>';
+  if(lastExport){try{var em=JSON.parse(lastExport);s+='<div style="font-size:11px;color:#888;margin-bottom:6px">Last export: <strong>'+em.date+'</strong> by '+em.by+'</div>';}catch(e){}}
+  s+='<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">';
+  s+='<button onclick="exportForTeam()" style="background:var(--red);color:#fff;border:none;padding:7px 14px;border-radius:8px;font-family:var(--sans);font-size:12px;font-weight:600;cursor:pointer">⬇ Export data.json</button>';
+  if(typeof window!=="undefined"&&window._githubData){s+='<button onclick="loadGithubData()" style="background:var(--grn);color:#fff;border:none;padding:7px 14px;border-radius:8px;font-family:var(--sans);font-size:12px;font-weight:600;cursor:pointer">☁ Load Team Data</button>';}
+  s+='</div><div style="font-size:11px;color:#999;line-height:1.6"><b>How:</b> Upload files → Export data.json → commit to GitHub repo root <code style="background:#eee;padding:1px 4px;border-radius:3px">hamleysteam/hamleys_ecom_dashboard/data.json</code> → team refreshes page → auto-loads. No Supabase needed.</div>';
+  s+='</div><div class="ug">';
   FDEFS.forEach(function(f){
     var st=US[f.id];
     var badge=st&&st.done?'<span style="background:var(--gbg);color:var(--grn);font-family:var(--mono);font-size:9px;padding:2px 6px;border-radius:3px;margin-left:auto">✓</span>':st&&st.parsing?'<span style="background:var(--abg);color:var(--amb);font-family:var(--mono);font-size:9px;padding:2px 6px;border-radius:3px;margin-left:auto">…</span>':st&&st.error?'<span style="background:var(--ebg);color:var(--err);font-family:var(--mono);font-size:9px;padding:2px 6px;border-radius:3px;margin-left:auto">Err</span>':"";
@@ -1795,7 +1832,7 @@ async function clearAll(){
 
 // ═══ RENDER + NAV ════════════════════════════════════════
 function render(){
-  var map={weekly:tabWeekly,targets:tabTargets,overview:tabOverview,channels:tabChannels,
+  var map={weekly:tabWeekly,campaign:tabCampaign,targets:tabTargets,overview:tabOverview,channels:tabChannels,
     brands:tabBrands,categories:tabCategories,sellers:tabSellers,skus:tabSKUs,
     discounts:tabDiscounts,stores:tabStores,sla:tabSLA,catalog:tabCatalog,
     verify:tabVerify,upload:tabUpload,admin:tabAdmin};
@@ -1811,7 +1848,7 @@ function render(){
   });
 }
 
-var TAB_TITLES={"weekly":"Weekly Review","targets":"Targets","overview":"Overview","channels":"Channels","brands":"Brands","categories":"Categories","sellers":"Top Sellers","skus":"Unique SKUs","discounts":"Discounts","stores":"Stores","sla":"SLA & Cancellation","catalog":"Catalog","verify":"Verify Data","upload":"Upload Data","admin":"Admin"};
+var TAB_TITLES={"weekly":"Weekly Review","campaign":"Campaign Performance","targets":"Targets","overview":"Overview","channels":"Channels","brands":"Brands","categories":"Categories","sellers":"Top Sellers","skus":"Unique SKUs","discounts":"Discounts","stores":"Stores","sla":"SLA & Cancellation","catalog":"Catalog","verify":"Verify Data","upload":"Upload Data","admin":"Admin"};
 function switchTab(id){
   AT=id;
   document.querySelectorAll(".sb-item").forEach(function(t){t.classList.toggle("on",t.dataset.tab===id);});
@@ -2068,6 +2105,274 @@ function dlSLA(){
   var rows=[hdr];
   (FD.sla_cancel.recs||[]).forEach(function(r){rows.push([r.name,r.city,r.rm,r.rom,+r.sla_pct.toFixed(1),+r.total_cancel_pct.toFixed(1),+r.store_cancel_pct.toFixed(1),+r.cust_cancel_pct.toFixed(1),r.total_orders,+r.return_pct.toFixed(1)]);});
   dlXLS(rows,'SLA Cancellation','Hamleys_SLA_Cancel');
+}
+
+// ═══ DAILY TRACKER PARSER ════════════════════════════════
+function parseDailyTracker(wb){
+  var out={recs:[],campaigns:{},rows:0,maxDate:null,minDate:null};
+  var toDate=function(v){
+    if(!v||typeof v!=='number'||v<40000)return null;
+    var d=new Date(Math.round((v-25569)*86400*1000));
+    return d.toISOString().slice(0,10);
+  };
+
+  // ── Sheet: June 2026 Actuals (overall daily) ─────────
+  var shA=null;
+  wb.SheetNames.forEach(function(n){if(n.toLowerCase().includes('actuals')||n.toLowerCase().includes('june 2026'))shA=wb.Sheets[n];});
+  if(shA){
+    var raw=XLSX.utils.sheet_to_json(shA,{header:1,raw:true,defval:null});
+    // Find header row (has 'Sessions' or 'session')
+    var hi=0;
+    for(var i=0;i<Math.min(8,raw.length);i++){if(raw[i]&&raw[i].some(function(v){return v&&String(v).toLowerCase().includes('session');})){hi=i;break;}}
+    var hdr=raw[hi]||[];
+    var fi=function(){var kws=Array.prototype.slice.call(arguments);for(var k=0;k<kws.length;k++){var x=hdr.findIndex(function(h){return h&&String(h).toLowerCase().includes(kws[k].toLowerCase());});if(x>=0)return x;}return-1;};
+    var dC=0,sessC=fi('session'),fbC=fi('fb spend','fb spends'),gC=fi('google spend','google spends');
+    var totPerfC=fi('total perf'),totSpC=fi('total spend','total spends'),brandC=fi('branding');
+    var gaRevC=fi('ga revenue'),backRevC=fi('backend gross'),gaPayC=fi('ga total paid');
+    var roasC=fi('roas'),pRoasC=fi('paid roas'),ordC=fi('orders'),aovC=fi('aov');
+    var acosC=fi('acos'),pAcosC=fi('paid acos'),tgtSpC=fi('target spend'),tgtRevC=fi('target revenue');
+    for(var i=hi+1;i<raw.length;i++){
+      var r=raw[i];if(!r)continue;
+      var ds=toDate(r[dC]);if(!ds)continue;
+      var fbS=fbC>=0?toN(r[fbC]):0,gS=gC>=0?toN(r[gC]):0;
+      var totS=totSpC>=0?toN(r[totSpC]):fbS+gS;
+      var rev=backRevC>=0?toN(r[backRevC]):gaRevC>=0?toN(r[gaRevC]):0;
+      if(totS===0&&rev===0)continue;
+      out.recs.push({date:ds,sessions:sessC>=0?toN(r[sessC]):0,fbSpend:fbS,googleSpend:gS,
+        totalSpend:totS,gaRev:gaRevC>=0?toN(r[gaRevC]):0,backendRev:rev,
+        roas:roasC>=0?toN(r[roasC]):0,paidRoas:pRoasC>=0?toN(r[pRoasC]):0,
+        orders:ordC>=0?toN(r[ordC]):0,aov:aovC>=0?toN(r[aovC]):0,
+        acos:acosC>=0?toN(r[acosC]):0,paidAcos:pAcosC>=0?toN(r[pAcosC]):0,
+        tgtSpend:tgtSpC>=0?toN(r[tgtSpC]):0,tgtRev:tgtRevC>=0?toN(r[tgtRevC]):0});
+    }
+    out.recs.sort(function(a,b){return a.date>b.date?1:-1;});
+  }
+
+  // ── Sheet: June Campaign (campaign x date grid) ───────
+  var shC=null;
+  wb.SheetNames.forEach(function(n){if(n.toLowerCase().includes('campaign'))shC=wb.Sheets[n];});
+  if(shC){
+    var raw2=XLSX.utils.sheet_to_json(shC,{header:1,raw:true,defval:null});
+    if(raw2.length>0){
+      var hdr2=raw2[0]||[];
+      // Find date column blocks: cols where header is number > 40000
+      var blocks=[];
+      for(var c=0;c<hdr2.length;c++){
+        var v=hdr2[c];
+        if(v&&typeof v==='number'&&v>40000){blocks.push({col:c,date:toDate(v)});}
+        else if(v&&(String(v).toLowerCase()==='june'||String(v).toLowerCase()==='june mtd'||String(v).toLowerCase()==='jUne')){blocks.push({col:c,date:'MTD'});}
+      }
+      var SKIP=['projected','paid rev','total','paid revenue'];
+      for(var i=1;i<raw2.length;i++){
+        var r=raw2[i];if(!r)continue;
+        for(var b=0;b<blocks.length;b++){
+          var bc=blocks[b].col,dt=blocks[b].date;
+          var name=r[bc];
+          if(!name||typeof name!=='string')continue;
+          name=name.trim();
+          if(!name||SKIP.some(function(s){return name.toLowerCase()===s;}))continue;
+          var sp=toN(r[bc+1]),rv=toN(r[bc+2]),rs=sp>0&&rv>0?rv/sp:toN(r[bc+3]),ss=toN(r[bc+4]);
+          if(!out.campaigns[name])out.campaigns[name]={daily:[],mtd:{spend:0,rev:0,sessions:0}};
+          if(dt==='MTD'){out.campaigns[name].mtd={spend:sp,rev:rv,roas:rs,sessions:ss};}
+          else{
+            var already=out.campaigns[name].daily.some(function(e){return e.date===dt;});
+            if(!already&&(sp>0||rv>0))out.campaigns[name].daily.push({date:dt,spend:sp,rev:rv,roas:rs,sessions:ss});
+          }
+        }
+      }
+    }
+  }
+
+  out.rows=out.recs.length;
+  if(out.recs.length){
+    out.maxDate=out.recs[out.recs.length-1].date;
+    out.minDate=out.recs[0].date;
+  }
+  return out;
+}
+
+// ═══ TAB: CAMPAIGN ═══════════════════════════════════════
+function tabCampaign(){
+  var dt=FD.daily_tracker;
+  if(!dt||!dt.recs||!dt.recs.length)return noData('Upload Daily Tracker via \u2191 Upload tab');
+  var recs=dt.recs,camps=dt.campaigns;
+  var s='<div class="sec">';
+
+  // ── Date range ──────────────────────────────────────────
+  var maxD=dt.maxDate,minD=dt.minDate;
+  // Sort recs desc for display
+  var recsD=recs.slice().sort(function(a,b){return a.date>b.date?-1:1;});
+
+  // ── MTD totals from recs ────────────────────────────────
+  var mtdSp=0,mtdFB=0,mtdGg=0,mtdRev=0,mtdSess=0,mtdOrd=0,mtdTgtSp=0,mtdTgtRev=0;
+  recs.forEach(function(r){mtdSp+=r.totalSpend;mtdFB+=r.fbSpend;mtdGg+=r.googleSpend;mtdRev+=r.backendRev||r.gaRev;mtdSess+=r.sessions;mtdOrd+=r.orders;mtdTgtSp+=r.tgtSpend;mtdTgtRev+=r.tgtRev;});
+  var mtdROAS=mtdSp>0?mtdRev/mtdSp:0;
+  var mtdACOS=mtdRev>0?mtdSp/mtdRev*100:0;
+
+  // ── WoW calc ────────────────────────────────────────────
+  var allDates=recs.map(function(r){return r.date;}).sort();
+  var lastDate=allDates[allDates.length-1];
+  // Last 7 days (TW) and prior 7 (LW)
+  var twCut=new Date(lastDate);twCut.setDate(twCut.getDate()-6);
+  var lwCut=new Date(lastDate);lwCut.setDate(lwCut.getDate()-13);
+  var twCutS=twCut.toISOString().slice(0,10);
+  var lwCutS=lwCut.toISOString().slice(0,10);
+  var lwEndS=new Date(twCut.getTime()-86400000).toISOString().slice(0,10);
+  var twRecs=recs.filter(function(r){return r.date>=twCutS;});
+  var lwRecs=recs.filter(function(r){return r.date>=lwCutS&&r.date<=lwEndS;});
+  var sumR=function(arr,k){return arr.reduce(function(s,r){return s+(r[k]||0);},0);};
+  var twSp=sumR(twRecs,'totalSpend'),lwSp=sumR(lwRecs,'totalSpend');
+  var twRv=sumR(twRecs,'backendRev')||sumR(twRecs,'gaRev');
+  var lwRv=sumR(lwRecs,'backendRev')||sumR(lwRecs,'gaRev');
+  var twFB=sumR(twRecs,'fbSpend'),lwFB=sumR(lwRecs,'fbSpend');
+  var twGg=sumR(twRecs,'googleSpend'),lwGg=sumR(lwRecs,'googleSpend');
+  var twROAS=twSp>0?twRv/twSp:0,lwROAS=lwSp>0?lwRv/lwSp:0;
+
+  // ── Section header ──────────────────────────────────────
+  s+='<div class="sh"><span class="sn">CA</span><span class="st">Campaign Performance</span><span class="ss">'+minD+' \u2192 '+maxD+'</span>';
+  s+='<button onclick="dlCampaign()" style="margin-left:8px;background:var(--bg);border:1.5px solid var(--div);border-radius:6px;padding:3px 10px;font-size:11px;cursor:pointer;color:#555;font-family:var(--sans)">\u2b07 Excel</button></div>';
+
+  // ── KPI cards ───────────────────────────────────────────
+  s+='<div class="kg">';
+  s+=kpi('MTD Spend','<span style="font-size:20px;font-weight:700">\u20b9'+fN(Math.round(mtdSp))+'</span>','','','',mtdTgtSp>0?'Target: \u20b9'+fN(Math.round(mtdTgtSp)):'');
+  s+=kpi('FB Spends','\u20b9'+fN(Math.round(mtdFB)),'','','',fP(mtdSp>0?mtdFB/mtdSp*100:0)+' of total');
+  s+=kpi('Google Spends','\u20b9'+fN(Math.round(mtdGg)),'','','',fP(mtdSp>0?mtdGg/mtdSp*100:0)+' of total');
+  s+=kpi('Backend Rev','<span style="font-size:20px;font-weight:700">\u20b9'+fN(Math.round(mtdRev))+'</span>','','','',mtdTgtRev>0?'Target: \u20b9'+fN(Math.round(mtdTgtRev))+' ('+fP(mtdRev/mtdTgtRev*100)+' achv)':'');
+  s+=kpi('ROAS',mtdROAS.toFixed(2),'','','',mtdACOS>0?'ACOS: '+fP(mtdACOS):'');
+  s+=kpi('Sessions',fN(mtdSess),'','','',mtdOrd>0?fN(mtdOrd)+' orders':'');
+  s+='</div>';
+
+  // ── WoW Summary ─────────────────────────────────────────
+  s+='<div class="sh" style="margin-top:4px"><span class="sn">WoW</span><span class="st">Week-on-Week (Last 7 days vs Prior 7)</span><span class="ss">TW: '+twCutS+' \u2192 '+lastDate+' · LW: '+lwCutS+' \u2192 '+lwEndS+'</span></div>';
+  s+='<div class="tw"><table><thead>'+mkTH(['Metric','Last Week','This Week','Change%'])+'</thead><tbody>';
+  [['Total Spend',lwSp,twSp],['FB Spends',lwFB,twFB],['Google Spends',lwGg,twGg],['Revenue',lwRv,twRv],['ROAS',lwROAS,twROAS,true]].forEach(function(m){
+    var isRoas=m[3];
+    s+=mkTD([m[0],isRoas?m[1].toFixed(2):'\u20b9'+fN(Math.round(m[1])),isRoas?m[2].toFixed(2):'\u20b9'+fN(Math.round(m[2])),bdg(chg(m[2],m[1]),isRoas?false:true)],'');
+  });
+  s+='</tbody></table></div>';
+
+  // ── Campaign WoW Table ──────────────────────────────────
+  // Build campaign WoW from daily data
+  var campList=[];
+  Object.keys(camps).forEach(function(name){
+    var c=camps[name];
+    var daily=c.daily||[];
+    var tw=daily.filter(function(d){return d.date>=twCutS;});
+    var lw=daily.filter(function(d){return d.date>=lwCutS&&d.date<=lwEndS;});
+    var twSp2=tw.reduce(function(s,d){return s+d.spend;},0);
+    var lwSp2=lw.reduce(function(s,d){return s+d.spend;},0);
+    var twRv2=tw.reduce(function(s,d){return s+d.rev;},0);
+    var lwRv2=lw.reduce(function(s,d){return s+d.rev;},0);
+    var mtdSp2=c.mtd&&c.mtd.spend>0?c.mtd.spend:daily.reduce(function(s,d){return s+d.spend;},0);
+    var mtdRv2=c.mtd&&c.mtd.rev>0?c.mtd.rev:daily.reduce(function(s,d){return s+d.rev;},0);
+    if(mtdSp2===0&&mtdRv2===0)return;
+    campList.push({name:name,mtdSp:mtdSp2,mtdRv:mtdRv2,mtdROAS:mtdSp2>0?mtdRv2/mtdSp2:0,
+      lwSp:lwSp2,twSp:twSp2,lwRv:lwRv2,twRv:twRv2,
+      lwROAS:lwSp2>0?lwRv2/lwSp2:0,twROAS:twSp2>0?twRv2/twSp2:0});
+  });
+  campList.sort(function(a,b){return b.mtdRv-a.mtdRv;});
+
+  s+='<div class="sh" style="margin-top:8px"><span class="sn">\u21b3</span><span class="st">By Campaign — WoW Comparison</span><button onclick="dlCampaignWoW()" style="margin-left:auto;background:var(--bg);border:1.5px solid var(--div);border-radius:6px;padding:3px 10px;font-size:11px;cursor:pointer;color:#555;font-family:var(--sans)">\u2b07 CSV</button></div>';
+  s+='<div class="tw"><table><thead>'+mkTH(['Campaign','MTD Spend','MTD Rev','MTD ROAS','Spend LW','Spend TW','\u0394 Spend','Rev LW','Rev TW','\u0394 Rev','ROAS LW','ROAS TW','\u0394 ROAS'])+'</thead><tbody>';
+  campList.forEach(function(c,i){
+    var rc=c.mtdROAS<1?'var(--red)':c.mtdROAS<3?'var(--amb)':'inherit';
+    s+=mkTD(['<strong>'+c.name+'</strong>','\u20b9'+fN(Math.round(c.mtdSp)),'<span style="font-weight:600">\u20b9'+fN(Math.round(c.mtdRv))+'</span>','<span style="color:'+rc+'">'+c.mtdROAS.toFixed(2)+'</span>',
+      c.lwSp>0?'\u20b9'+fN(Math.round(c.lwSp)):'—',c.twSp>0?'\u20b9'+fN(Math.round(c.twSp)):'—',c.lwSp>0||c.twSp>0?bdg(chg(c.twSp,c.lwSp),true):'—',
+      c.lwRv>0?'\u20b9'+fN(Math.round(c.lwRv)):'—',c.twRv>0?'\u20b9'+fN(Math.round(c.twRv)):'—',c.lwRv>0||c.twRv>0?bdg(chg(c.twRv,c.lwRv)):'—',
+      c.lwROAS>0?c.lwROAS.toFixed(2):'—',c.twROAS>0?c.twROAS.toFixed(2):'—',c.lwROAS>0||c.twROAS>0?bdg(chg(c.twROAS,c.lwROAS),true):'—'],i<3?'t3':'');
+  });
+  s+='</tbody></table></div>';
+
+  // ── Daily Tracker Table ─────────────────────────────────
+  s+='<div class="sh" style="margin-top:8px"><span class="sn">DAY</span><span class="st">Daily Performance</span><button onclick="dlDailyTracker()" style="margin-left:auto;background:var(--bg);border:1.5px solid var(--div);border-radius:6px;padding:3px 10px;font-size:11px;cursor:pointer;color:#555;font-family:var(--sans)">\u2b07 Excel</button></div>';
+  s+='<div class="tw"><table><thead>'+mkTH(['Date','Day','Sessions','FB \u20b9','Google \u20b9','Total Spend','Target','Variance','Backend Rev','Target Rev','ROAS','Paid ROAS','Orders'])+'</thead><tbody>';
+  recsD.slice(0,31).forEach(function(r){
+    var roasCol=r.roas>8?'var(--grn)':r.roas>5?'inherit':'var(--red)';
+    var var1=r.tgtSpend>0?r.totalSpend-r.tgtSpend:null;
+    var var2=r.tgtRev>0?r.backendRev-r.tgtRev:null;
+    s+=mkTD([r.date,r.day||'',fN(r.sessions),'\u20b9'+fN(Math.round(r.fbSpend)),'\u20b9'+fN(Math.round(r.googleSpend)),'<strong>\u20b9'+fN(Math.round(r.totalSpend))+'</strong>',r.tgtSpend>0?'\u20b9'+fN(Math.round(r.tgtSpend)):'—',var1!==null?'<span style="color:'+(var1>0?'var(--red)':'var(--grn))')+'">\u20b9'+fN(Math.round(var1))+'</span>':'—','<strong>\u20b9'+fN(Math.round(r.backendRev||r.gaRev))+'</strong>',r.tgtRev>0?'\u20b9'+fN(Math.round(r.tgtRev)):'—','<span style="color:'+roasCol+';font-weight:600">'+r.roas.toFixed(2)+'</span>',r.paidRoas>0?r.paidRoas.toFixed(2):'—',r.orders>0?fN(r.orders):'—'],'');
+  });
+  return s+'</tbody></table></div></div>';
+}
+
+// ── Campaign download helpers ────────────────────────────
+function dlCampaign(){
+  var dt=FD.daily_tracker;if(!dt)return showToast('No Daily Tracker loaded');
+  var camps=dt.campaigns,recs=dt.recs;
+  var wb2=XLSX.utils.book_new();
+  // Daily sheet
+  var dHdr=['Date','Day','Sessions','FB Spend','Google Spend','Total Spend','Target Spend','Variance Spend','Backend Rev','Target Rev','ROAS','Paid ROAS','Orders','ACOS'];
+  var dRows=[dHdr];
+  recs.slice().sort(function(a,b){return a.date>b.date?1:-1;}).forEach(function(r){dRows.push([r.date,r.day,r.sessions,Math.round(r.fbSpend),Math.round(r.googleSpend),Math.round(r.totalSpend),Math.round(r.tgtSpend||0),Math.round(r.totalSpend-(r.tgtSpend||0)),Math.round(r.backendRev||r.gaRev),Math.round(r.tgtRev||0),+r.roas.toFixed(2),+r.paidRoas.toFixed(2),r.orders,+r.acos.toFixed(4)]);});
+  XLSX.utils.book_append_sheet(wb2,XLSX.utils.aoa_to_sheet(dRows),'Daily Performance');
+  // Campaign MTD sheet
+  var cHdr=['Campaign','MTD Spend','MTD Revenue','MTD ROAS'];
+  var cRows=[cHdr];
+  var campArr=Object.keys(camps).map(function(n){var c=camps[n];var sp=c.mtd&&c.mtd.spend>0?c.mtd.spend:c.daily.reduce(function(s,d){return s+d.spend;},0);var rv=c.mtd&&c.mtd.rev>0?c.mtd.rev:c.daily.reduce(function(s,d){return s+d.rev;},0);return{name:n,sp:sp,rv:rv,roas:sp>0?rv/sp:0};}).sort(function(a,b){return b.rv-a.rv;});
+  campArr.forEach(function(c){cRows.push([c.name,Math.round(c.sp),Math.round(c.rv),+c.roas.toFixed(2)]);});
+  XLSX.utils.book_append_sheet(wb2,XLSX.utils.aoa_to_sheet(cRows),'Campaign MTD');
+  XLSX.writeFile(wb2,'Hamleys_Campaign_'+dt.maxDate+'.xlsx');
+  showToast('Downloaded Campaign Excel');
+}
+function dlCampaignWoW(){
+  var dt=FD.daily_tracker;if(!dt)return showToast('No Daily Tracker loaded');
+  var camps=dt.campaigns,recs=dt.recs;
+  var allDates=recs.map(function(r){return r.date;}).sort();
+  var lastDate=allDates[allDates.length-1];
+  var twCut=new Date(lastDate);twCut.setDate(twCut.getDate()-6);var twCutS=twCut.toISOString().slice(0,10);
+  var lwCut=new Date(lastDate);lwCut.setDate(lwCut.getDate()-13);var lwCutS=lwCut.toISOString().slice(0,10);
+  var lwEndS=new Date(twCut.getTime()-86400000).toISOString().slice(0,10);
+  var hdr=['Campaign Name','Spend LW','Spend TW','Change in Spend (%)','Revenue LW','Revenue TW','Change in Revenue (%)','ROAS LW','ROAS TW','Change in ROAS (%)'];
+  var rows=[hdr];
+  Object.keys(camps).forEach(function(name){
+    var daily=camps[name].daily||[];
+    var tw=daily.filter(function(d){return d.date>=twCutS;});
+    var lw=daily.filter(function(d){return d.date>=lwCutS&&d.date<=lwEndS;});
+    var twSp=tw.reduce(function(s,d){return s+d.spend;},0),lwSp=lw.reduce(function(s,d){return s+d.spend;},0);
+    var twRv=tw.reduce(function(s,d){return s+d.rev;},0),lwRv=lw.reduce(function(s,d){return s+d.rev;},0);
+    var twRO=twSp>0?twRv/twSp:0,lwRO=lwSp>0?lwRv/lwSp:0;
+    if(twSp===0&&lwSp===0)return;
+    rows.push([name,Math.round(lwSp),Math.round(twSp),lwSp>0?+((twSp-lwSp)/lwSp*100).toFixed(1):0,Math.round(lwRv),Math.round(twRv),lwRv>0?+((twRv-lwRv)/lwRv*100).toFixed(1):0,+lwRO.toFixed(2),+twRO.toFixed(2),lwRO>0?+((twRO-lwRO)/lwRO*100).toFixed(1):0]);
+  });
+  dlXLS(rows,'WoW','Hamleys_Campaign_WoW_'+lastDate);
+}
+function dlDailyTracker(){
+  var dt=FD.daily_tracker;if(!dt)return showToast('No Daily Tracker loaded');
+  var hdr=['Date','Day','Sessions','FB Spend','Google Spend','Total Spend','Target Spend','Backend Rev','Target Rev','ROAS','Paid ROAS','Orders','ACOS','Paid ACOS'];
+  var rows=[hdr];
+  dt.recs.slice().sort(function(a,b){return a.date>b.date?-1:1;}).forEach(function(r){rows.push([r.date,r.day,r.sessions,Math.round(r.fbSpend),Math.round(r.googleSpend),Math.round(r.totalSpend),Math.round(r.tgtSpend||0),Math.round(r.backendRev||r.gaRev||0),Math.round(r.tgtRev||0),+r.roas.toFixed(2),+r.paidRoas.toFixed(2),r.orders,+r.acos.toFixed(4),+r.paidAcos.toFixed(4)]);});
+  dlXLS(rows,'Daily Tracker','Hamleys_DailyTracker_'+dt.maxDate);
+}
+
+
+// ═══ GITHUB TEAM SHARING ═════════════════════════════════
+function exportForTeam(){
+  if(!Object.keys(FD).some(function(k){return FD[k]&&FD[k].rows>0;})){
+    showToast("No data loaded yet — upload files first");return;
+  }
+  var meta={by:CU?CU.name:"unknown",date:new Date().toLocaleDateString("en-IN"),ts:Date.now()};
+  // Strip raw recs to keep file manageable (keep first 5000 rows each)
+  var fd2={};
+  Object.keys(FD).forEach(function(k){
+    if(!FD[k])return;
+    var f=Object.assign({},FD[k]);
+    if(f.recs&&f.recs.length>5000)f.recs=f.recs.slice(0,5000);
+    fd2[k]=f;
+  });
+  var out=JSON.stringify({_meta:meta,_fd:fd2});
+  var blob=new Blob([out],{type:"application/json"});
+  var a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="data.json";a.click();
+  localStorage.setItem("hm_export_meta",JSON.stringify(meta));
+  showToast("data.json downloaded — commit it to your GitHub repo root");
+  // Show instructions
+  setTimeout(function(){showToast("Path: hamleysteam/hamleys_ecom_dashboard/data.json");},3000);
+}
+function loadGithubData(){
+  if(!window._githubData)return;
+  Object.assign(FD,window._githubData._fd);
+  M=compute(FD);if(M)updateHdr();render();
+  showToast("\u2601 Team data loaded (by "+window._githubData._meta.by+")");
+  window._githubData=null;
 }
 </script>
 </body>
