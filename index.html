@@ -441,25 +441,42 @@ async function checkSess(){
 function showApp(){
   document.getElementById("ls").style.display="none";
   document.getElementById("app").style.display="block";
-  // Try to auto-load data.json from GitHub Pages (team sharing)
-  fetch("./data.json?t="+Date.now()).then(function(r){
-    if(r.ok)return r.json();throw new Error("no file");
-  }).then(function(data){
-    if(data&&data._meta&&data._fd){
-      // Only auto-load if local data is empty
-      var hasLocal=Object.keys(FD).some(function(k){return FD[k]&&FD[k].rows>0;});
-      if(!hasLocal){
-        Object.assign(FD,data._fd);
-        M=compute(FD);
-        if(M)updateHdr();
-        render();
-        showToast("☁ Team data loaded (by "+data._meta.by+" on "+data._meta.date+")");
-      }else{
-        showToast("☁ Newer team export available — go to Upload → Load Team Data");
-        window._githubData=data;
-      }
+  // Auto-load team data — Supabase first, then data.json fallback
+  var hasLocal=Object.keys(FD).some(function(k){return FD[k]&&FD[k].rows>0;});
+  if(!hasLocal){
+    if(USE_SUPABASE){
+      loadFromSupa().then(function(loaded){
+        if(loaded){
+          if(M)updateHdr();
+          render();
+          showToast("☁ Team data loaded from Supabase");
+        }else{
+          // Supabase had nothing — try data.json fallback
+          fetch("./data.json?t="+Date.now()).then(function(r){if(r.ok)return r.json();throw 0;}).then(function(data){
+            if(data&&data._meta&&data._fd){Object.assign(FD,data._fd);M=compute(FD);if(M)updateHdr();render();showToast("☁ Team data loaded (by "+data._meta.by+")");}
+          }).catch(function(){});
+        }
+      });
+    }else{
+      // Supabase off — try data.json
+      fetch("./data.json?t="+Date.now()).then(function(r){
+        if(r.ok)return r.json();throw new Error("no file");
+      }).then(function(data){
+        if(data&&data._meta&&data._fd){
+          Object.assign(FD,data._fd);
+          M=compute(FD);
+          if(M)updateHdr();
+          render();
+          showToast("☁ Team data loaded (by "+data._meta.by+" on "+data._meta.date+")");
+        }
+      }).catch(function(){});
     }
-  }).catch(function(){});// silently ignore if no data.json
+  }else if(!USE_SUPABASE){
+    // Has local data, check if newer team version on GitHub
+    fetch("./data.json?t="+Date.now()).then(function(r){if(r.ok)return r.json();throw 0;}).then(function(data){
+      if(data&&data._meta&&data._fd){showToast("☁ Newer team export available — Upload → Load Team Data");window._githubData=data;}
+    }).catch(function(){});
+  }
   // Sidebar user
   const initials=CU.name.split(" ").map(w=>w[0]).join("").toUpperCase().slice(0,2);
   document.getElementById("sb-avatar").textContent=initials;
@@ -1070,13 +1087,14 @@ function parseCatalog(wb){
 function parseStoreTracker(wb){
   const sh=wb.Sheets[wb.SheetNames[0]];
   const raw=XLSX.utils.sheet_to_json(sh,{header:1,raw:true,defval:null});
+  // Find header row — look for "Status" or "Store Name"
   let hi=0;
   for(let i=0;i<Math.min(5,raw.length);i++){
     const r=raw[i];if(!r)continue;
-    if(r.some(v=>v&&(String(v).toLowerCase().includes("store")||String(v).toLowerCase().includes("live")))){hi=i;break;}
+    if(r.some(v=>v&&(String(v).toLowerCase()==='status'||String(v).toLowerCase().includes('store name')))){hi=i;break;}
   }
   const hdr=raw[hi]||[];
-  const idxOf=function(){
+  const fi=function(){
     const kws=Array.prototype.slice.call(arguments);
     for(let k=0;k<kws.length;k++){
       const idx=hdr.findIndex(h=>h&&String(h).toLowerCase().includes(kws[k].toLowerCase()));
@@ -1084,39 +1102,51 @@ function parseStoreTracker(wb){
     }
     return -1;
   };
-  const nmC=idxOf("store name","store","name"),cdC=idxOf("store code","code"),
-    lvC=idxOf("live sku","live skus","active sku","sku count"),
-    ordC=idxOf("orders","order count"),revC=idxOf("revenue","rev","booking rev"),
-    fillC=idxOf("fill rate","fill"),canC=idxOf("cancel","cancellation"),
-    cityC=idxOf("city","location"),
-    statC=idxOf("status","live status","is live","live/not","active/inactive"),
-    reasonC=idxOf("reason","not live reason","reason for","remarks","remark","comment");
+  const nmC=fi('store name','store','name'),
+    cdC=fi('site code','code'),
+    platC=fi('platform'),
+    fmtC=fi('format'),
+    rmC=fi(' rm ','rm name','regional manager','	rm	'),
+    romC=fi('rom','regional ops'),
+    sdC=fi(' sd ','sd name'),
+    ecomC=fi('ecom live','live y/n','live y'),
+    statC=fi('status'),
+    rmkC=fi('remark'),
+    reasonC=fi('reason for deactivation','reason for','deactivation reason');
+  // Fix: RM is often a short header — use position-based fallback
+  const rmIdx=rmC>=0?rmC:(hdr.findIndex(h=>h&&String(h).trim().toUpperCase()==='RM'));
+  const romIdx=romC>=0?romC:(hdr.findIndex(h=>h&&String(h).trim().toUpperCase()==='ROM'));
+  const sdIdx=sdC>=0?sdC:(hdr.findIndex(h=>h&&String(h).trim().toUpperCase()==='SD'));
   const recs=[];
   for(let i=hi+1;i<raw.length;i++){
     const r=raw[i];if(!r)continue;
-    const name=String(r[nmC>=0?nmC:0]||"").trim();
-    if(!name||["total","grand total",""].includes(name.toLowerCase()))continue;
-    const statRaw=statC>=0?String(r[statC]||"").trim():"";
-    const liveSkus=toN(r[lvC>=0?lvC:0]);
-    // Determine live status: from status col if present, else from live SKU count
-    let isLive=liveSkus>0;
-    if(statRaw){
-      const sl=statRaw.toLowerCase();
-      isLive=sl.includes("live")||sl.includes("yes")||sl.includes("active")||sl==="1"||sl==="true";
-      if(sl.includes("not live")||sl.includes("no")||sl.includes("inactive")||sl==="0")isLive=false;
-    }
-    recs.push({name,code:String(r[cdC>=0?cdC:0]||"").trim(),
-      city:String(r[cityC>=0?cityC:""]||"").trim(),
-      live_skus:liveSkus,orders:toN(r[ordC>=0?ordC:0]),
-      revenue:toN(r[revC>=0?revC:0]),fill_rate:toN(r[fillC>=0?fillC:0]),
-      cancel_pct:toN(r[canC>=0?canC:0]),
-      status:statRaw,isLive:isLive,
-      reason:reasonC>=0?String(r[reasonC]||"").trim():""});
+    const name=String(r[nmC>=0?nmC:2]||'').trim();
+    if(!name||['total','grand total',''].includes(name.toLowerCase()))continue;
+    const statRaw=statC>=0?String(r[statC]||'').trim():'';
+    const ecomRaw=ecomC>=0?String(r[ecomC]||'').trim():'';
+    // isLive: Status === 'Active' (exact, not 'In Active') OR Ecom Live = 'Y'
+    const sl=statRaw.toLowerCase();
+    const isLive=(sl==='active')||(ecomRaw.toUpperCase()==='Y'&&sl==='active');
+    // Reason: combine Remark + Reason for Deactivation
+    const rmk=rmkC>=0?String(r[rmkC]||'').trim():'';
+    const rsn=reasonC>=0?String(r[reasonC]||'').trim():'';
+    const reason=[rmk,rsn].filter(function(x){return x&&x!==statRaw&&x.toLowerCase()!=='active'&&x.toLowerCase()!=='in active';}).join(' · ');
+    recs.push({
+      name,
+      code:cdC>=0?String(r[cdC]||'').trim():'',
+      platform:platC>=0?String(r[platC]||'').trim():'',
+      format:fmtC>=0?String(r[fmtC]||'').trim():'',
+      rm:rmIdx>=0?String(r[rmIdx]||'').trim():'',
+      rom:romIdx>=0?String(r[romIdx]||'').trim():'',
+      sd:sdIdx>=0?String(r[sdIdx]||'').trim():'',
+      ecom:ecomRaw,status:statRaw,isLive,reason,
+      // Keep numeric fields as 0 (file has no orders/rev/SKU data)
+      live_skus:0,orders:0,revenue:0,fill_rate:0,cancel_pct:0
+    });
   }
   return{recs,rows:recs.length,minDate:null,maxDate:null};
 }
 
-// ═══ TARGETS from DSR ══════════════════════════════════
 function getTargets(P,dsr){
   if(!P||!dsr)return{booked:null,gross:null,total:null,ajio:null,amazon:null,jiomart:null};
   const mk=P.year+"-"+String(P.monthNum).padStart(2,"0");
@@ -1693,59 +1723,82 @@ function tabDiscounts(){
 // ═══ TAB: STORES ════════════════════════════════════════
 function tabStores(){
   var st=FD.store_tracker;
-  if(!st)return'<div class="al al-a">Upload Store Live Tracker to see store data. Go to ↑ Upload tab.</div>';
-  var recs=st.recs||[];if(!recs.length)return'<div class="al al-r">No store rows detected. Check column headers in Verify Data tab.</div>';
+  if(!st)return'<div class="al al-a">Upload Store Live Tracker via ↑ Upload tab.</div>';
+  var recs=st.recs||[];
+  if(!recs.length)return'<div class="al al-r">No store rows detected. Check headers include "Store Name" and "Status".</div>';
   var liveRecs=recs.filter(function(r){return r.isLive;});
-  var notLiveRecs=recs.filter(function(r){return!r.isLive;});
-  var totSKUs=recs.reduce(function(s,r){return s+r.live_skus;},0);
-  var totOrd=recs.reduce(function(s,r){return s+r.orders;},0);
-  var totRev=recs.reduce(function(s,r){return s+r.revenue;},0);
-  var hasReason=recs.some(function(r){return r.reason;});
+  var notLive=recs.filter(function(r){return!r.isLive;});
+  // Group not-live by reason category
+  var reasonGroups={};
+  notLive.forEach(function(r){
+    var cat=r.reason||'No reason given';
+    // Simplify category
+    if(cat.toLowerCase().includes('pipeline'))cat='In Pipeline';
+    else if(cat.toLowerCase().includes('go live not confirm')||cat.toLowerCase().includes('go live not'))cat='Go Live Not Confirmed';
+    else if(cat.toLowerCase().includes('renovati'))cat='Store Under Renovation';
+    else if(cat.toLowerCase().includes('packaging'))cat='Packaging Issue';
+    else if(cat.toLowerCase().includes('deactivated'))cat=cat.match(/deactivated in week \d+/i)?cat.match(/deactivated in week \d+/i)[0]:'Deactivated';
+    else if(!cat||cat==='In Active'||cat==='No reason given')cat='No reason given';
+    if(!reasonGroups[cat])reasonGroups[cat]=[];
+    reasonGroups[cat].push(r);
+  });
+  // Group by RM
+  var rmGroups={};
+  recs.forEach(function(r){
+    var rm=r.rm||'Unknown';
+    if(!rmGroups[rm])rmGroups[rm]={live:0,notLive:0};
+    if(r.isLive)rmGroups[rm].live++;else rmGroups[rm].notLive++;
+  });
+  var hasRM=recs.some(function(r){return r.rm;});
+  var hasROM=recs.some(function(r){return r.rom;});
   var s='<div class="sec"><div class="sh"><span class="sn">ST</span><span class="st">Store Live Tracker</span><span class="ss">'+recs.length+' stores</span><button onclick="dlStores()" style="margin-left:auto;background:var(--bg);border:1.5px solid var(--div);border-radius:6px;padding:3px 10px;font-size:11px;cursor:pointer;color:#555;font-family:var(--sans)">⬇ Excel</button></div>';
   // KPIs
   s+='<div class="kg">';
-  s+=kpi("Total Stores",fN(recs.length),"","","","");
-  s+=kpi("Live",'<span style="color:var(--grn);font-size:22px;font-weight:700">'+fN(liveRecs.length)+"</span>","","","",fP(recs.length?liveRecs.length/recs.length*100:0)+" of total");
-  s+=kpi("Not Live",'<span style="color:var(--red);font-size:22px;font-weight:700">'+fN(notLiveRecs.length)+"</span>","","","",notLiveRecs.length?notLiveRecs.length+" stores need attention":"All stores live ✓");
-  s+=kpi("Total Live SKUs",fN(totSKUs),"","","",liveRecs.length?"Avg "+fN(Math.round(totSKUs/liveRecs.length))+" per live store":"");
-  if(totOrd>0)s+=kpi("Total Orders",fN(totOrd));
-  if(totRev>0)s+=kpi("Total Revenue",fL(totRev));
-  s+="</div>";
-  // Not-live stores section
-  if(notLiveRecs.length){
-    s+='<div class="sh" style="margin-top:6px"><span class="sn" style="background:var(--ebg);color:var(--red)">⚠</span><span class="st">Not Live ('+notLiveRecs.length+' stores)</span></div>';
-    var nlHdrs=["Store","City","Live SKUs"];
-    if(hasReason)nlHdrs.push("Reason");
-    s+='<div class="tw"><table><thead>'+mkTH(nlHdrs)+"</thead><tbody>";
-    notLiveRecs.slice().sort(function(a,b){return(a.name||"").localeCompare(b.name||"");}).forEach(function(r){
-      var row=[r.name||r.code||"—",r.city||"—",r.live_skus>0?fN(r.live_skus):'<span style="color:var(--red)">0</span>'];
-      if(hasReason)row.push(r.reason||'<span style="color:#bbb">—</span>');
-      s+=mkTD(row,"");
+  s+=kpi('Total Stores',fN(recs.length));
+  s+=kpi('Live','<span style="color:var(--grn);font-size:22px;font-weight:700">'+fN(liveRecs.length)+'</span>','','','',fP(liveRecs.length/recs.length*100)+' of total');
+  s+=kpi('Not Live','<span style="color:var(--red);font-size:22px;font-weight:700">'+fN(notLive.length)+'</span>','','','',notLive.length+'  stores need attention');
+  s+='</div>';
+  // Not-live breakdown by reason
+  if(notLive.length){
+    s+='<div class="sh" style="margin-top:6px"><span class="sn" style="background:var(--ebg);color:var(--red)">⚠</span><span class="st">Not Live — Breakdown by Reason ('+notLive.length+' stores)</span></div>';
+    s+='<div class="tw"><table><thead>'+mkTH(['Reason','Count','Stores'])+'</thead><tbody>';
+    Object.keys(reasonGroups).sort().forEach(function(cat){
+      var group=reasonGroups[cat];
+      s+=mkTD([cat,fN(group.length),group.map(function(r){return r.name;}).join(', ')],'');
     });
-    s+="</tbody></table></div>";
+    s+='</tbody></table></div>';
+  }
+  // RM summary
+  if(hasRM){
+    s+='<div class="sh" style="margin-top:8px"><span class="sn">RM</span><span class="st">By Regional Manager</span></div>';
+    s+='<div class="tw"><table><thead>'+mkTH(['RM','Total','Live','Not Live','Live%'])+'</thead><tbody>';
+    Object.keys(rmGroups).sort().forEach(function(rm){
+      var g=rmGroups[rm];var tot=g.live+g.notLive;
+      var pc=tot>0?fP(g.live/tot*100):'—';
+      var pcC=g.live/tot>=0.8?'var(--grn)':g.live/tot>=0.6?'var(--amb)':'var(--red)';
+      s+=mkTD([rm,fN(tot),'<span style="color:var(--grn)">'+fN(g.live)+'</span>','<span style="color:var(--red)">'+fN(g.notLive)+'</span>','<span style="color:'+pcC+';font-weight:600">'+pc+'</span>'],'');
+    });
+    s+='</tbody></table></div>';
   }
   // All stores table
+  var hdrs=['Store','Code'];
+  if(hasRM)hdrs.push('RM');if(hasROM)hdrs.push('ROM');
+  hdrs.push('Status','Reason');
   s+='<div class="sh" style="margin-top:8px"><span class="sn">↓</span><span class="st">All Stores</span></div>';
-  s+='<div class="tw"><table><thead>'+mkTH(["Store","City","Status","Live SKUs","Orders","Revenue","Fill Rate%","Cancel%"])+"</thead><tbody>";
+  s+='<div class="tw"><table><thead>'+mkTH(hdrs)+'</thead><tbody>';
   recs.slice().sort(function(a,b){
     if(a.isLive!==b.isLive)return a.isLive?-1:1;
-    return(b.revenue||b.live_skus||b.orders)-(a.revenue||a.live_skus||a.orders);
+    return(a.name||'').localeCompare(b.name||'');
   }).forEach(function(r){
-    var fr=r.fill_rate>1?r.fill_rate:r.fill_rate*100;
-    var cp=r.cancel_pct>1?r.cancel_pct:r.cancel_pct*100;
-    var frC=fr>0?(fr>=95?"var(--grn)":fr>=85?"var(--amb)":"var(--red)"):"#bbb";
-    var cpC=cp>0?(cp<=5?"var(--grn)":cp<=15?"var(--amb)":"var(--red)"):"#bbb";
-    var statusBadge=r.isLive?'<span style="color:var(--grn);font-weight:600;font-size:11px">● Live</span>':'<span style="color:var(--red);font-size:11px">● Not Live</span>';
-    s+=mkTD([r.name||r.code||"—",r.city||"—",statusBadge,
-      r.live_skus>0?fN(r.live_skus):'<span style="color:var(--red)">0</span>',
-      r.orders>0?fN(r.orders):"—",r.revenue>0?fL(r.revenue):"—",
-      fr>0?'<span style="color:'+frC+'">'+fP(fr)+"</span>":"—",
-      cp>0?'<span style="color:'+cpC+'">'+fP(cp)+"</span>":"—"],!r.isLive?"":"");
+    var badge=r.isLive?'<span style="color:var(--grn);font-weight:600">● Active</span>':'<span style="color:var(--red)">● Not Live</span>';
+    var row=[r.name,r.code||'—'];
+    if(hasRM)row.push(r.rm||'—');if(hasROM)row.push(r.rom||'—');
+    row.push(badge,r.reason||'—');
+    s+=mkTD(row,'');
   });
-  return s+"</tbody></table></div></div>";
+  return s+'</tbody></table></div></div>';
 }
 
-// ═══ TAB: CATALOG ═══════════════════════════════════════
 function tabSLA(){
   var sl=FD.sla_cancel;
   if(!sl)return'<div class="sec">'+noData("Upload Store SLA & Cancellation file via \u2191 Upload tab")+"</div>";
@@ -2224,9 +2277,9 @@ function dlSKUs(){
 
 function dlStores(){
   if(!FD.store_tracker)return showToast('No Store Tracker loaded');
-  var hdr=['Store','City','Status','Live SKUs','Orders','Revenue','Fill Rate%','Cancel%','Reason'];
+  var hdr=['Store','Code','Platform','Format','RM','ROM','Status','Ecom Live Y/N','Reason'];
   var rows=[hdr];
-  (FD.store_tracker.recs||[]).forEach(function(r){rows.push([r.name||r.code,r.city,r.isLive?'Live':'Not Live',r.live_skus,r.orders,Math.round(r.revenue||0),+((r.fill_rate>1?r.fill_rate:r.fill_rate*100)||0).toFixed(1),+((r.cancel_pct>1?r.cancel_pct:r.cancel_pct*100)||0).toFixed(1),r.reason||'']);});
+  (FD.store_tracker.recs||[]).forEach(function(r){rows.push([r.name,r.code,r.platform,r.format,r.rm,r.rom,r.status,r.ecom,r.reason||'']);});
   dlXLS(rows,'Stores','Hamleys_Stores');
 }
 
