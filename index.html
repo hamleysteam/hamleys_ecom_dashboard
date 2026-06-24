@@ -2301,92 +2301,132 @@ function dlSLA(){
 // ═══ DAILY TRACKER PARSER ════════════════════════════════
 function parseDailyTracker(wb){
   var out={recs:[],campaigns:{},rows:0,maxDate:null,minDate:null};
+
+  // Handle both Excel serial numbers AND JS Date objects from SheetJS
   var toDate=function(v){
-    if(!v||typeof v!=='number'||v<40000)return null;
-    var d=new Date(Math.round((v-25569)*86400*1000));
-    return d.toISOString().slice(0,10);
+    if(!v&&v!==0)return null;
+    if(v instanceof Date){
+      // JS Date object (SheetJS returns these for .xlsx date cells)
+      if(isNaN(v.getTime()))return null;
+      return v.toISOString().slice(0,10);
+    }
+    if(typeof v==='number'&&v>40000){
+      // Excel serial number
+      var d=new Date(Math.round((v-25569)*86400*1000));
+      return d.toISOString().slice(0,10);
+    }
+    if(typeof v==='string'){
+      var s=v.slice(0,10);
+      if(s.match(/^\d{4}-\d{2}-\d{2}$/))return s;
+    }
+    return null;
   };
 
-  // ── Sheet: June 2026 Actuals (overall daily) ─────────
-  var shA=null;
-  wb.SheetNames.forEach(function(n){
-    var nl=n.toLowerCase();
-    if(nl.includes('actuals')||nl.includes('actual')||nl.includes('daily')||nl.includes('tracker')||nl.match(/\d{4}\s*(actuals?)?/))shA=wb.Sheets[n];
+  // ── Parse ALL "Actuals" sheets ────────────────────────
+  var actualSheets=wb.SheetNames.filter(function(n){
+    return n.toLowerCase().includes('actuals')&&!n.toLowerCase().includes('copy');
   });
-  // Fallback: use sheet with most rows if still not found
-  if(!shA&&wb.SheetNames.length>0){
-    var best=null,bestRows=0;
-    wb.SheetNames.forEach(function(n){
-      var nl=n.toLowerCase();
-      if(nl.includes('campaign')||nl.includes('timeline')||nl.includes('change'))return;
-      var raw0=XLSX.utils.sheet_to_json(wb.Sheets[n],{header:1,raw:true,defval:null});
-      if(raw0.length>bestRows){bestRows=raw0.length;best=n;}
-    });
-    if(best)shA=wb.Sheets[best];
-  }
-  if(shA){
-    var raw=XLSX.utils.sheet_to_json(shA,{header:1,raw:true,defval:null});
-    // Find header row (has 'Sessions' or 'session')
-    var hi=0;
-    for(var i=0;i<Math.min(8,raw.length);i++){if(raw[i]&&raw[i].some(function(v){return v&&String(v).toLowerCase().includes('session');})){hi=i;break;}}
+
+  actualSheets.forEach(function(shName){
+    var sh=wb.Sheets[shName];
+    if(!sh)return;
+    var raw=XLSX.utils.sheet_to_json(sh,{header:1,raw:true,defval:null});
+    // Find header row: contains "Sessions" or "FB Spends"
+    var hi=-1;
+    for(var i=0;i<Math.min(8,raw.length);i++){
+      if(raw[i]&&raw[i].some(function(v){return v&&(String(v).toLowerCase().includes('session')||String(v).toLowerCase().includes('fb spend'));})){hi=i;break;}
+    }
+    if(hi<0)return;
     var hdr=raw[hi]||[];
-    var fi=function(){var kws=Array.prototype.slice.call(arguments);for(var k=0;k<kws.length;k++){var x=hdr.findIndex(function(h){return h&&String(h).toLowerCase().includes(kws[k].toLowerCase());});if(x>=0)return x;}return-1;};
+    var fi=function(){
+      var kws=Array.prototype.slice.call(arguments);
+      for(var k=0;k<kws.length;k++){
+        var x=hdr.findIndex(function(h){return h&&String(h).toLowerCase().includes(kws[k].toLowerCase());});
+        if(x>=0)return x;
+      }
+      return -1;
+    };
     var dC=0,sessC=fi('session'),fbC=fi('fb spend','fb spends'),gC=fi('google spend','google spends');
-    var totPerfC=fi('total perf'),totSpC=fi('total spend','total spends'),brandC=fi('branding');
-    var gaRevC=fi('ga revenue'),backRevC=fi('backend gross'),gaPayC=fi('ga total paid');
+    var totSpC=fi('total spend','total spends');
+    var gaRevC=fi('ga revenue');
+    var backRevC=fi('backend gross');
     var roasC=fi('roas'),pRoasC=fi('paid roas'),ordC=fi('orders'),aovC=fi('aov');
-    var acosC=fi('acos'),pAcosC=fi('paid acos'),tgtSpC=fi('target spend'),tgtRevC=fi('target revenue');
+    var acosC=fi('acos'),pAcosC=fi('paid acos'),tgtSpC=fi('target spend','target spends');
+    var tgtRevC=fi('target revenue');
+
     for(var i=hi+1;i<raw.length;i++){
       var r=raw[i];if(!r)continue;
       var ds=toDate(r[dC]);if(!ds)continue;
       var fbS=fbC>=0?toN(r[fbC]):0,gS=gC>=0?toN(r[gC]):0;
       var totS=totSpC>=0?toN(r[totSpC]):fbS+gS;
-      var rev=backRevC>=0?toN(r[backRevC]):gaRevC>=0?toN(r[gaRevC]):0;
+      var rev=(backRevC>=0&&toN(r[backRevC])>0)?toN(r[backRevC]):(gaRevC>=0?toN(r[gaRevC]):0);
+      // Skip rows with no spend AND no revenue
       if(totS===0&&rev===0)continue;
-      out.recs.push({date:ds,sessions:sessC>=0?toN(r[sessC]):0,fbSpend:fbS,googleSpend:gS,
-        totalSpend:totS,gaRev:gaRevC>=0?toN(r[gaRevC]):0,backendRev:rev,
-        roas:roasC>=0?toN(r[roasC]):0,paidRoas:pRoasC>=0?toN(r[pRoasC]):0,
-        orders:ordC>=0?toN(r[ordC]):0,aov:aovC>=0?toN(r[aovC]):0,
-        acos:acosC>=0?toN(r[acosC]):0,paidAcos:pAcosC>=0?toN(r[pAcosC]):0,
-        tgtSpend:tgtSpC>=0?toN(r[tgtSpC]):0,tgtRev:tgtRevC>=0?toN(r[tgtRevC]):0});
+      // Check for duplicate date (keep first occurrence)
+      if(out.recs.some(function(x){return x.date===ds;}))continue;
+      out.recs.push({date:ds,
+        sessions:sessC>=0?toN(r[sessC]):0,
+        fbSpend:fbS,googleSpend:gS,totalSpend:totS,
+        gaRev:gaRevC>=0?toN(r[gaRevC]):0,
+        backendRev:rev,
+        roas:roasC>=0?toN(r[roasC]):0,
+        paidRoas:pRoasC>=0?toN(r[pRoasC]):0,
+        orders:ordC>=0?toN(r[ordC]):0,
+        aov:aovC>=0?toN(r[aovC]):0,
+        acos:acosC>=0?toN(r[acosC]):0,
+        paidAcos:pAcosC>=0?toN(r[pAcosC]):0,
+        tgtSpend:tgtSpC>=0?toN(r[tgtSpC]):0,
+        tgtRev:tgtRevC>=0?toN(r[tgtRevC]):0});
     }
-    out.recs.sort(function(a,b){return a.date>b.date?1:-1;});
-  }
+  });
 
-  // ── Sheet: June Campaign (campaign x date grid) ───────
-  var shC=null;
-  wb.SheetNames.forEach(function(n){if(n.toLowerCase().includes('campaign'))shC=wb.Sheets[n];});
-  if(shC){
-    var raw2=XLSX.utils.sheet_to_json(shC,{header:1,raw:true,defval:null});
-    if(raw2.length>0){
-      var hdr2=raw2[0]||[];
-      // Find date column blocks: cols where header is number > 40000
-      var blocks=[];
-      for(var c=0;c<hdr2.length;c++){
-        var v=hdr2[c];
-        if(v&&typeof v==='number'&&v>40000){blocks.push({col:c,date:toDate(v)});}
-        else if(v&&(String(v).toLowerCase()==='june'||String(v).toLowerCase()==='june mtd'||String(v).toLowerCase()==='jUne')){blocks.push({col:c,date:'MTD'});}
+  // Sort records chronologically
+  out.recs.sort(function(a,b){return a.date>b.date?1:-1;});
+
+  // ── Parse ALL "Campaign" sheets ───────────────────────
+  var campSheets=wb.SheetNames.filter(function(n){
+    return n.toLowerCase().includes('campaign')&&
+           !n.toLowerCase().includes('structure')&&
+           !n.toLowerCase().includes('strategy')&&
+           !n.toLowerCase().includes('2627')&&
+           !n.toLowerCase().includes('last year');
+  });
+
+  campSheets.forEach(function(shName){
+    var sh=wb.Sheets[shName];if(!sh)return;
+    var raw2=XLSX.utils.sheet_to_json(sh,{header:1,raw:true,defval:null});
+    if(!raw2.length)return;
+    var hdr2=raw2[0]||[];
+    // Find date column blocks: header cells that are Date objects or Excel serials
+    var blocks=[];
+    for(var c=0;c<hdr2.length;c++){
+      var v=hdr2[c];
+      var dt=toDate(v);
+      if(dt){blocks.push({col:c,date:dt});}
+      else if(v&&typeof v==='string'&&v.toLowerCase().match(/^[a-z]+( mtd)?$/)&&c>0){
+        blocks.push({col:c,date:'MTD'});
       }
-      var SKIP=['projected','paid rev','total','paid revenue'];
-      for(var i=1;i<raw2.length;i++){
-        var r=raw2[i];if(!r)continue;
-        for(var b=0;b<blocks.length;b++){
-          var bc=blocks[b].col,dt=blocks[b].date;
-          var name=r[bc];
-          if(!name||typeof name!=='string')continue;
-          name=name.trim();
-          if(!name||SKIP.some(function(s){return name.toLowerCase()===s;}))continue;
-          var sp=toN(r[bc+1]),rv=toN(r[bc+2]),rs=sp>0&&rv>0?rv/sp:toN(r[bc+3]),ss=toN(r[bc+4]);
-          if(!out.campaigns[name])out.campaigns[name]={daily:[],mtd:{spend:0,rev:0,sessions:0}};
-          if(dt==='MTD'){out.campaigns[name].mtd={spend:sp,rev:rv,roas:rs,sessions:ss};}
-          else{
-            var already=out.campaigns[name].daily.some(function(e){return e.date===dt;});
-            if(!already&&(sp>0||rv>0))out.campaigns[name].daily.push({date:dt,spend:sp,rev:rv,roas:rs,sessions:ss});
-          }
+    }
+    if(!blocks.length)return;
+    var SKIP=['projected','paid rev','total','paid revenue',''];
+    for(var i=1;i<raw2.length;i++){
+      var r=raw2[i];if(!r)continue;
+      for(var b=0;b<blocks.length;b++){
+        var bc=blocks[b].col,dt2=blocks[b].date;
+        var name=r[bc];
+        if(!name||typeof name!=='string')continue;
+        name=name.trim();
+        if(!name||SKIP.some(function(s){return name.toLowerCase()===s;}))continue;
+        var sp=toN(r[bc+1]),rv=toN(r[bc+2]),rs=sp>0&&rv>0?rv/sp:toN(r[bc+3]),ss=toN(r[bc+4]);
+        if(!out.campaigns[name])out.campaigns[name]={daily:[],mtd:{spend:0,rev:0,sessions:0}};
+        if(dt2==='MTD'){out.campaigns[name].mtd={spend:sp,rev:rv,roas:rs,sessions:ss};}
+        else{
+          var already=out.campaigns[name].daily.some(function(e){return e.date===dt2;});
+          if(!already&&(sp>0||rv>0))out.campaigns[name].daily.push({date:dt2,spend:sp,rev:rv,roas:rs,sessions:ss});
         }
       }
     }
-  }
+  });
 
   out.rows=out.recs.length+Object.keys(out.campaigns).length;
   if(out.recs.length){
@@ -2395,6 +2435,7 @@ function parseDailyTracker(wb){
   }
   return out;
 }
+
 
 // ═══ TAB: CAMPAIGN ═══════════════════════════════════════
 function tabCampaign(){
