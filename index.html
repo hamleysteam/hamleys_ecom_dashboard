@@ -730,7 +730,7 @@ async function readWb(buf,fid){
   var names=await getSheetNames(buf);
   if(!names)throw new Error("Cannot read sheet names.");
   var needed=null;
-  if(fid==="sales_dump"){
+  if(fid==="sales_dump"||fid==="sales_dump_ly"){
     var d=names.find(function(n){return n==="Dump";})||
           names.find(function(n){return n.toLowerCase()==="dump";})||
           names.find(function(n){return n.toLowerCase().endsWith("dump")&&!n.toLowerCase().includes("category");});
@@ -1200,9 +1200,15 @@ function compute(fd){
   const jmM=DA("jiomart",P.mtdS,P.mtdE),jmP=DA("jiomart",P.pmS,P.pmE);
   // DSR-based LY: filter DSR records to last year same period (lylS–lylE)
   // Works automatically if the DSR file contains full FY data (Apr 2025 onwards)
-  var hmLY=DA("hm",P.lylS,P.lylE),ajLY=DA("ajio",P.lylS,P.lylE);
-  var amLY=DA("amazon",P.lylS,P.lylE),jmLY=DA("jiomart",P.lylS,P.lylE);
-  var hasDSRLY=hmLY.rev>0||ajLY.rev>0||amLY.rev>0;
+  // LY hamleys.in: use Sales Dump LY if available (DSR only has current year)
+  var hmLYrev=0,hmLYord=0;
+  if(sdly&&sdly.recs){
+    sdly.recs.filter(function(r){return bet(r.date,P.lylS,P.lylE);}).forEach(function(r){hmLYrev+=r.rev||0;hmLYord+=r.orders||0;});
+  }
+  var hmLY={rev:hmLYrev,orders:hmLYord};
+  // Other channels: from DSR LY period (works if LY DSR is uploaded)
+  var ajLY=DA("ajio",P.lylS,P.lylE),amLY=DA("amazon",P.lylS,P.lylE),jmLY=DA("jiomart",P.lylS,P.lylE);
+  var hasDSRLY=hmLY.rev>0||ajLY.rev>0||amLY.rev>0||jmLY.rev>0;
   const totalM=(hmM.rev||0)+(ajM.rev||0)+(amM.rev||0)+(jmM.rev||0);
   const totalP=(hmP.rev||0)+(ajP.rev||0)+(amP.rev||0)+(jmP.rev||0);
 
@@ -1601,13 +1607,13 @@ function tabBrands(){
   var X=M;if(!X)return noData();var P=X.P;
   var s='<div class="sec"><div class="sh"><span class="sn">BR</span><span class="st">Brand Performance · '+P.month+' 1–'+P.d+' vs '+P.prevMonth+' 1–'+P.d+'</span><button onclick="dlBrands()" style="margin-left:auto;background:var(--bg);border:1.5px solid var(--div);border-radius:6px;padding:3px 10px;font-size:11px;cursor:pointer;color:#555;font-family:var(--sans)">⬇ Excel</button></div>';
   s+='<div class="tw"><table><thead>'+mkTH(["Brand",P.month+" 1-"+P.d,P.prevMonth+" 1-"+P.d,"MoM%","LYL%","Units","AOV","Disc%"])+"</thead><tbody>";
-  var bTotMTD=0,bTotPM=0,bTotWTD=0,bTotLW=0,bTotU=0;
+  var bTotMTD=0,bTotPM=0,bTotU=0;
   X.brands.forEach(function(b,i){
     var dc=b.dPct>35?"var(--red)":b.dPct>25?"var(--amb)":"var(--grn)";
-    s+=mkTD(["<strong>"+b.brand+"</strong>",fL(b.mtdR),fL(b.pmR),bdg(chg(b.mtdR,b.pmR)),fL(b.wtdR),fL(b.pwR),bdg(chg(b.wtdR,b.pwR)),bdg(chg(b.mtdR,b.lyR)),fN(b.units),b.orders>0?"₹"+(b.mtdR/b.orders).toFixed(0):"—",b.dPct>0?'<span style="color:'+dc+'">'+fP(b.dPct)+"</span>":"—"],i<3?"t3":"");
+    s+=mkTD(["<strong>"+b.brand+"</strong>",fL(b.mtdR),fL(b.pmR),bdg(chg(b.mtdR,b.pmR)),b.lyR>0?bdg(chg(b.mtdR,b.lyR)):"—",fN(b.units),b.orders>0?"₹"+(b.mtdR/b.orders).toFixed(0):"—",b.dPct>0?'<span style="color:'+dc+'">'+fP(b.dPct)+"</span>":"—"],i<3?"t3":"");
     bTotMTD+=b.mtdR;bTotPM+=b.pmR;bTotU+=b.units;
   });
-  s+=mkTD(["<strong>TOP 20 TOTAL</strong>","<strong>"+fL(bTotMTD)+"</strong>","<strong>"+fL(bTotPM)+"</strong>",bdg(chg(bTotMTD,bTotPM)),"—",fN(bTotU),"—","—"],"ttl");
+  s+=mkTD(["<strong>TOTAL</strong>","<strong>"+fL(bTotMTD)+"</strong>","<strong>"+fL(bTotPM)+"</strong>",bdg(chg(bTotMTD,bTotPM)),"—",fN(bTotU),"—","—"],"ttl");
   s+="</tbody></table></div>";
   // Data cross-check: dump total vs DSR
   var dumpMTD=FD.sales_dump?FD.sales_dump.recs.filter(function(r){return bet(r.date,P.mtdS,P.mtdE);}).reduce(function(a,r){return a+r.rev;},0):0;
@@ -1629,7 +1635,7 @@ function tabBrands(){
 function tabCategories(){
   var X=M;if(!X)return noData();var P=X.P;
   var s='<div class="sec"><div class="sh"><span class="sn">CA</span><span class="st">Category Performance · '+P.month+' 1–'+P.d+' vs '+P.prevMonth+' 1–'+P.d+'</span><button onclick="dlCategories()" style="margin-left:auto;background:var(--bg);border:1.5px solid var(--div);border-radius:6px;padding:3px 10px;font-size:11px;cursor:pointer;color:#555;font-family:var(--sans)">⬇ Excel</button></div>';
-  s+='<div class="tw"><table><thead>'+mkTH(["Category",P.month+" 1-"+P.d,P.prevMonth+" 1-"+P.d,"MoM%","Units","AOV","Disc%",P.prevMonth+" Disc%","Δ"])+"</thead><tbody>";
+  s+='<div class="tw"><table><thead>'+mkTH(["Category",P.month+" 1-"+P.d,P.prevMonth+" 1-"+P.d,"MoM%","Units","AOV","Disc% MTD","Disc% Prev","Growth%"])+"</thead><tbody>";
   var cTotM=0,cTotP=0,cTotW=0,cTotPW=0,cTotU=0;
   X.categories.forEach(function(c,i){
     var dc=c.dPct>35?"var(--red)":c.dPct>25?"var(--amb)":"var(--grn)";
@@ -1761,10 +1767,11 @@ function tabStores(){
   // Not-live breakdown by reason
   if(notLive.length){
     s+='<div class="sh" style="margin-top:6px"><span class="sn" style="background:var(--ebg);color:var(--red)">⚠</span><span class="st">Not Live — Breakdown by Reason ('+notLive.length+' stores)</span></div>';
-    s+='<div class="tw"><table><thead>'+mkTH(['Reason','Count','Stores'])+'</thead><tbody>';
-    Object.keys(reasonGroups).sort().forEach(function(cat){
+    s+='<div class="tw"><table><thead>'+mkTH(['Reason','Count','% of Total'])+'</thead><tbody>';
+    Object.keys(reasonGroups).sort(function(a,b){return reasonGroups[b].length-reasonGroups[a].length;}).forEach(function(cat){
       var group=reasonGroups[cat];
-      s+=mkTD([cat,fN(group.length),group.map(function(r){return r.name;}).join(', ')],'');
+      var pct=fP(group.length/recs.length*100);
+      s+=mkTD([cat,'<strong>'+fN(group.length)+'</strong>',pct],'');
     });
     s+='</tbody></table></div>';
   }
