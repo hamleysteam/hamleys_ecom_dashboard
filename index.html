@@ -354,7 +354,7 @@ tr.ttl td{background:#F5F5F5;font-weight:600}
         <div class="tb-sub" id="hdr-d">No data loaded</div>
       </div>
       <div class="tb-right">
-        <button onclick="downloadAnalytics()" style="background:var(--red);color:#fff;border:none;padding:7px 14px;border-radius:8px;font-family:var(--sans);font-size:12px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:6px;flex-shrink:0" title="Download all metrics as Excel">⬇ Export</button>
+        <button onclick="syncFromSupabase()" id="sync-btn" title="Pull latest data from Supabase" style="background:none;border:1.5px solid var(--div);border-radius:8px;padding:5px 11px;cursor:pointer;font-size:13px;color:var(--blk);font-family:var(--sans);margin-right:6px">&#8635; Sync</button><button onclick="downloadAnalytics()" style="background:var(--red);color:#fff;border:none;padding:7px 14px;border-radius:8px;font-family:var(--sans);font-size:12px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:6px;flex-shrink:0" title="Download all metrics as Excel">⬇ Export</button>
         <div class="ch-pills" id="ch-bar">
           <button class="ch-pill on" data-ch="all">All Channels</button>
           <button class="ch-pill" data-ch="hm">hamleys.in</button>
@@ -441,41 +441,36 @@ async function checkSess(){
 function showApp(){
   document.getElementById("ls").style.display="none";
   document.getElementById("app").style.display="block";
-  // Auto-load team data — Supabase first, then data.json fallback
-  var hasLocal=Object.keys(FD).some(function(k){return FD[k]&&FD[k].rows>0;});
-  if(!hasLocal){
-    if(USE_SUPABASE){
-      loadFromSupa().then(function(loaded){
-        if(loaded){
-          if(M)updateHdr();
-          render();
-          showToast("☁ Team data loaded from Supabase");
-        }else{
-          // Supabase had nothing — try data.json fallback
-          fetch("./data.json?t="+Date.now()).then(function(r){if(r.ok)return r.json();throw 0;}).then(function(data){
-            if(data&&data._meta&&data._fd){Object.assign(FD,data._fd);M=compute(FD);if(M)updateHdr();render();showToast("☁ Team data loaded (by "+data._meta.by+")");}
-          }).catch(function(){});
-        }
-      });
-    }else{
-      // Supabase off — try data.json
+  // ── Supabase: ALWAYS load on login so all users see latest data ──
+  if(USE_SUPABASE){
+    loadFromSupa().then(function(loaded){
+      if(loaded){
+        if(M)updateHdr();
+        render();
+        showToast("☁ Team data synced from Supabase");
+      }else{
+        // Supabase empty — show whatever local data is available
+        if(M){updateHdr();render();}
+        showToast("Supabase has no shared data yet — upload files to share");
+      }
+    });
+  }else{
+    // Supabase off — try data.json fallback
+    var hasLocal=Object.keys(FD).some(function(k){return FD[k]&&FD[k].rows>0;});
+    if(!hasLocal){
       fetch("./data.json?t="+Date.now()).then(function(r){
         if(r.ok)return r.json();throw new Error("no file");
       }).then(function(data){
         if(data&&data._meta&&data._fd){
-          Object.assign(FD,data._fd);
-          M=compute(FD);
-          if(M)updateHdr();
-          render();
+          Object.assign(FD,data._fd);M=compute(FD);if(M)updateHdr();render();
           showToast("☁ Team data loaded (by "+data._meta.by+" on "+data._meta.date+")");
         }
       }).catch(function(){});
+    }else{
+      fetch("./data.json?t="+Date.now()).then(function(r){if(r.ok)return r.json();throw 0;}).then(function(data){
+        if(data&&data._meta&&data._fd){showToast("☁ Newer team export available — Upload → Load Team Data");window._githubData=data;}
+      }).catch(function(){});
     }
-  }else if(!USE_SUPABASE){
-    // Has local data, check if newer team version on GitHub
-    fetch("./data.json?t="+Date.now()).then(function(r){if(r.ok)return r.json();throw 0;}).then(function(data){
-      if(data&&data._meta&&data._fd){showToast("☁ Newer team export available — Upload → Load Team Data");window._githubData=data;}
-    }).catch(function(){});
   }
   // Sidebar user
   const initials=CU.name.split(" ").map(w=>w[0]).join("").toUpperCase().slice(0,2);
@@ -575,7 +570,11 @@ async function loadFromSupa(){
       any=true;
     }catch(e){}
   }
-  if(any)M=compute(FD);
+  if(any){
+    M=compute(FD);
+    // Persist to IndexedDB so session survives hard refresh
+    saveData().catch(function(){});
+  }
   return any;
 }
 
@@ -2451,11 +2450,30 @@ function tabCampaign(){
   // Sort recs desc for display
   var recsD=recs.slice().sort(function(a,b){return a.date>b.date?-1:1;});
 
-  // ── MTD totals from recs ────────────────────────────────
-  var mtdSp=0,mtdFB=0,mtdGg=0,mtdRev=0,mtdSess=0,mtdOrd=0,mtdTgtSp=0,mtdTgtRev=0;
-  recs.forEach(function(r){mtdSp+=r.totalSpend;mtdFB+=r.fbSpend;mtdGg+=r.googleSpend;mtdRev+=r.backendRev||r.gaRev;mtdSess+=r.sessions;mtdOrd+=r.orders;mtdTgtSp+=r.tgtSpend;mtdTgtRev+=r.tgtRev;});
+  // ── MTD totals: current month only ──────────────────────
+  // maxD = most recent date with data (e.g. "2026-06-23")
+  var curMonthPfx=maxD.slice(0,7); // "2026-06"
+  var curDay=parseInt(maxD.slice(8,10));
+  var curMonth=maxD.slice(5,7);var curYear=maxD.slice(0,4);
+  var mtdRecs=recs.filter(function(r){return r.date.startsWith(curMonthPfx);});
+  var prevMonthDate=new Date(parseInt(curYear),parseInt(curMonth)-2,curDay);
+  var prevMonthPfx=prevMonthDate.toISOString().slice(0,7);
+  var prevMtdRecs=recs.filter(function(r){
+    return r.date.startsWith(prevMonthPfx)&&parseInt(r.date.slice(8,10))<=curDay;
+  });
+  var sumK=function(arr,k){return arr.reduce(function(s,r){return s+(r[k]||0);},0);};
+  var mtdSp=sumK(mtdRecs,'totalSpend'),mtdFB=sumK(mtdRecs,'fbSpend'),mtdGg=sumK(mtdRecs,'googleSpend');
+  var mtdRev=mtdRecs.reduce(function(s,r){return s+(r.backendRev||r.gaRev||0);},0);
+  var mtdSess=sumK(mtdRecs,'sessions'),mtdOrd=sumK(mtdRecs,'orders');
+  var mtdTgtSp=sumK(mtdRecs,'tgtSpend'),mtdTgtRev=sumK(mtdRecs,'tgtRev');
+  // Previous month same period
+  var pmSp=sumK(prevMtdRecs,'totalSpend');
+  var pmRev=prevMtdRecs.reduce(function(s,r){return s+(r.backendRev||r.gaRev||0);},0);
   var mtdROAS=mtdSp>0?mtdRev/mtdSp:0;
+  var pmROAS=pmSp>0?pmRev/pmSp:0;
   var mtdACOS=mtdRev>0?mtdSp/mtdRev*100:0;
+  // Monthly target (sum of all target rows in current month)
+  var tgtROAS=mtdTgtSp>0&&mtdTgtRev>0?mtdTgtRev/mtdTgtSp:0;
 
   // ── WoW calc ────────────────────────────────────────────
   var allDates=recs.map(function(r){return r.date;}).sort();
@@ -2477,16 +2495,39 @@ function tabCampaign(){
   var twROAS=twSp>0?twRv/twSp:0,lwROAS=lwSp>0?lwRv/lwSp:0;
 
   // ── Section header ──────────────────────────────────────
-  s+='<div class="sh"><span class="sn">CA</span><span class="st">Campaign Performance</span><span class="ss">'+minD+' \u2192 '+maxD+'</span>';
+  s+='<div class="sh"><span class="sn">CA</span><span class="st">Campaign Performance</span><span class="ss">'+curMonthPfx+' (1\u2013'+curDay+') \u2022 data from '+minD+'</span>';
   s+='<button onclick="dlCampaign()" style="margin-left:8px;background:var(--bg);border:1.5px solid var(--div);border-radius:6px;padding:3px 10px;font-size:11px;cursor:pointer;color:#555;font-family:var(--sans)">\u2b07 Excel</button></div>';
 
   // ── KPI cards ───────────────────────────────────────────
   s+='<div class="kg">';
-  s+=kpi('MTD Spend','<span style="font-size:20px;font-weight:700">\u20b9'+fN(Math.round(mtdSp))+'</span>','','','',mtdTgtSp>0?'Target: \u20b9'+fN(Math.round(mtdTgtSp)):'');
+  // Spend KPI — MTD vs Target
+  var spAchvPct=mtdTgtSp>0?mtdRev/mtdTgtSp*100:0;
+  var spColor=mtdTgtSp>0?(mtdSp<=mtdTgtSp?'var(--grn)':'var(--red)'):'inherit';
+  s+=kpi(curMonth+' '+curYear+' Spend',
+    '<span style="font-size:20px;font-weight:700;color:'+spColor+'">\u20b9'+fN(Math.round(mtdSp))+'</span>',
+    '','','',
+    (mtdTgtSp>0?'Target \u20b9'+fN(Math.round(mtdTgtSp))+' \u2022 '+fP(mtdSp/mtdTgtSp*100)+' spent':'')+
+    (pmSp>0?' \u2022 MoM '+( mtdSp>pmSp?'+':'')+fP((mtdSp-pmSp)/pmSp*100):''));
+  // FB / Google split
   s+=kpi('FB Spends','\u20b9'+fN(Math.round(mtdFB)),'','','',fP(mtdSp>0?mtdFB/mtdSp*100:0)+' of total');
   s+=kpi('Google Spends','\u20b9'+fN(Math.round(mtdGg)),'','','',fP(mtdSp>0?mtdGg/mtdSp*100:0)+' of total');
-  s+=kpi('Backend Rev','<span style="font-size:20px;font-weight:700">\u20b9'+fN(Math.round(mtdRev))+'</span>','','','',mtdTgtRev>0?'Target: \u20b9'+fN(Math.round(mtdTgtRev))+' ('+fP(mtdRev/mtdTgtRev*100)+' achv)':'');
-  s+=kpi('ROAS',mtdROAS.toFixed(2),'','','',mtdACOS>0?'ACOS: '+fP(mtdACOS):'');
+  // Revenue KPI — MTD vs Target
+  var revAchvPct=mtdTgtRev>0?mtdRev/mtdTgtRev*100:0;
+  var revColor=revAchvPct>=100?'var(--grn)':revAchvPct>=80?'var(--amb)':'var(--red)';
+  s+=kpi('Backend Revenue',
+    '<span style="font-size:20px;font-weight:700;color:'+revColor+'">\u20b9'+fN(Math.round(mtdRev))+'</span>',
+    '','','',
+    (mtdTgtRev>0?'Target \u20b9'+fN(Math.round(mtdTgtRev))+' \u2022 '+fP(revAchvPct)+' achv':'')+
+    (pmRev>0?' \u2022 MoM '+(mtdRev>pmRev?'+':'')+fP((mtdRev-pmRev)/pmRev*100):''));
+  // ROAS KPI — Actual vs Target
+  var roasColor=tgtROAS>0?(mtdROAS>=tgtROAS?'var(--grn)':'var(--red)'):(mtdROAS>=8?'var(--grn)':mtdROAS>=5?'var(--amb)':'var(--red)');
+  s+=kpi('ROAS',
+    '<span style="font-size:20px;font-weight:700;color:'+roasColor+'">'+mtdROAS.toFixed(2)+'x</span>',
+    '','','',
+    (tgtROAS>0?'Target '+tgtROAS.toFixed(2)+'x':'')+
+    (pmROAS>0?' \u2022 LM '+pmROAS.toFixed(2)+'x':'')+
+    (mtdACOS>0?' \u2022 ACOS '+fP(mtdACOS):''));
+  // Sessions / Orders
   s+=kpi('Sessions',fN(mtdSess),'','','',mtdOrd>0?fN(mtdOrd)+' orders':'');
   s+='</div>';
 
@@ -2641,6 +2682,26 @@ function closeSidebar(){
 document.getElementById('sb-nav').addEventListener('click',function(e){
   if(e.target.closest('[data-tab]')&&window.innerWidth<=768)closeSidebar();
 });
+
+// ═══ SYNC BUTTON ══════════════════════════════════════════
+function syncFromSupabase(){
+  if(!USE_SUPABASE){showToast('Supabase is disabled — enable it first');return;}
+  var btn=document.getElementById('sync-btn');
+  if(btn){btn.textContent='⟳ Syncing…';btn.disabled=true;}
+  loadFromSupa().then(function(loaded){
+    if(btn){btn.textContent='⟳ Sync';btn.disabled=false;}
+    if(loaded){
+      if(M)updateHdr();
+      render();
+      showToast('☁ Synced — team data loaded from Supabase');
+    }else{
+      showToast('Nothing in Supabase yet — upload files first');
+    }
+  }).catch(function(){
+    if(btn){btn.textContent='⟳ Sync';btn.disabled=false;}
+    showToast('Sync failed — check your connection');
+  });
+}
 </script>
 </body>
 </html>
