@@ -354,7 +354,7 @@ tr.ttl td{background:#F5F5F5;font-weight:600}
         <div class="tb-sub" id="hdr-d">No data loaded</div>
       </div>
       <div class="tb-right">
-        <button onclick="syncFromSupabase()" id="sync-btn" title="Pull latest data from Supabase" style="background:none;border:1.5px solid var(--div);border-radius:8px;padding:5px 11px;cursor:pointer;font-size:13px;color:var(--blk);font-family:var(--sans);margin-right:6px">&#8635; Sync</button><button onclick="downloadAnalytics()" style="background:var(--red);color:#fff;border:none;padding:7px 14px;border-radius:8px;font-family:var(--sans);font-size:12px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:6px;flex-shrink:0" title="Download all metrics as Excel">⬇ Export</button>
+        <button onclick="debugSupabase()" id="debug-supa-btn" title="Debug Supabase connection" style="background:none;border:1.5px solid #f0a500;border-radius:8px;padding:5px 10px;cursor:pointer;font-size:12px;color:#f0a500;font-family:var(--sans);margin-right:4px">🔍 DB</button><button onclick="syncFromSupabase()" id="sync-btn" title="Pull latest data from Supabase" style="background:none;border:1.5px solid var(--div);border-radius:8px;padding:5px 11px;cursor:pointer;font-size:13px;color:var(--blk);font-family:var(--sans);margin-right:6px">&#8635; Sync</button><button onclick="downloadAnalytics()" style="background:var(--red);color:#fff;border:none;padding:7px 14px;border-radius:8px;font-family:var(--sans);font-size:12px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:6px;flex-shrink:0" title="Download all metrics as Excel">⬇ Export</button>
         <div class="ch-pills" id="ch-bar">
           <button class="ch-pill on" data-ch="all">All Channels</button>
           <button class="ch-pill" data-ch="hm">hamleys.in</button>
@@ -362,6 +362,9 @@ tr.ttl td{background:#F5F5F5;font-weight:600}
           <button class="ch-pill" data-ch="amazon">Amazon</button>
           <button class="ch-pill" data-ch="jiomart">Jiomart</button>
         </div>
+        <select id="month-sel" onchange="setSelMonth(this.value)" style="border:1.5px solid var(--div);border-radius:8px;padding:4px 8px;font-size:12px;font-family:var(--sans);color:var(--blk);background:var(--bg);cursor:pointer;margin-left:6px" title="Filter by month">
+          <option value="">Latest</option>
+        </select>
         <span class="data-badge" id="ch-meta">—</span>
       </div>
     </div>
@@ -490,6 +493,7 @@ const SUPA={
 };
 // Shared/team storage via Supabase is currently disabled — set to true to re-enable.
 const USE_SUPABASE=true;
+var SEL_DATE=null; // override for month filter (null = auto/latest)
 
 async function supaFetch(path,method,body){
   try{
@@ -524,7 +528,7 @@ async function saveToSupa(fid,parsed,meta){
     var r=await supaFetch("dashboard_files","POST",{
       file_id:fid+"::"+c,file_name:meta.name,row_count:parsed.rows||0,
       date_range:meta.dateRange||"",uploaded_by:CU.name,
-      uploaded_at:ts,data_json:chunks[c]
+      uploaded_at:ts,data_json:{d:chunks[c]}
     });
     if(!r.ok)return{ok:false,error:"chunk "+c+"/"+chunks.length+": "+(r.error||"HTTP "+r.status)};
   }
@@ -559,7 +563,7 @@ async function loadFromSupa(){
     var rows=chunkRows[fid]||{},complete=true,json="";
     for(var i=0;i<n;i++){
       if(typeof rows[i]!=="string"){complete=false;break;}
-      json+=rows[i];
+      var raw=rows[i];json+=(raw&&typeof raw==='object'&&raw.d?raw.d:(typeof raw==='string'?raw:''));
     }
     if(!complete)continue;
     try{
@@ -1180,7 +1184,7 @@ function avgK(recs,s,e,k){
 // ═══ COMPUTE ════════════════════════════════════════════
 function compute(fd){
   const sd=fd.sales_dump,sdly=fd.sales_dump_ly||null,dsr=fd.dsr,camp=fd.campaign;
-  const maxDate=(sd&&sd.maxDate)||(dsr&&dsr.maxDate)||null;
+  const maxDate=SEL_DATE||(sd&&sd.maxDate)||(dsr&&dsr.maxDate)||null;
   if(!maxDate)return null;
   const P=getPeriods(maxDate);
   const TGT=getTargets(P,dsr);
@@ -2022,6 +2026,7 @@ async function clearAll(){
 
 // ═══ RENDER + NAV ════════════════════════════════════════
 function render(){
+  populateMonthSel();
   var map={weekly:tabWeekly,campaign:tabCampaign,targets:tabTargets,overview:tabOverview,channels:tabChannels,
     brands:tabBrands,categories:tabCategories,sellers:tabSellers,skus:tabSKUs,
     discounts:tabDiscounts,stores:tabStores,sla:tabSLA,catalog:tabCatalog,
@@ -2695,12 +2700,74 @@ function syncFromSupabase(){
       render();
       showToast('☁ Synced — team data loaded from Supabase');
     }else{
-      showToast('Nothing in Supabase yet — upload files first');
+      showToast('Nothing loaded from Supabase — try uploading files again');
     }
   }).catch(function(){
     if(btn){btn.textContent='⟳ Sync';btn.disabled=false;}
     showToast('Sync failed — check your connection');
   });
+}
+
+// ═══ SUPABASE DEBUG ══════════════════════════════════════
+async function debugSupabase(){
+  showToast('Querying Supabase…');
+  var r=await supaFetch('dashboard_files?select=file_id,file_name,row_count,uploaded_by,uploaded_at&order=uploaded_at.desc&limit=50');
+  if(!r.ok){
+    alert('Supabase query FAILED\n\nStatus: '+r.status+'\nError: '+JSON.stringify(r.error||r.data));
+    return;
+  }
+  if(!r.data||!r.data.length){
+    alert('Supabase returned EMPTY — table has no rows.\n\nThis means either:\n1) Files were never uploaded (or upload failed silently)\n2) SELECT permission is blocked for anon role\n\nTry uploading a file and check if the card shows ☁ shared.');
+    return;
+  }
+  var lines=['Supabase has '+r.data.length+' rows:\n'];
+  var seen={};
+  r.data.forEach(function(row){
+    var base=row.file_id.replace(/::\d+$/,'');
+    if(!seen[base])seen[base]={count:0,by:row.uploaded_by,at:row.uploaded_at,name:row.file_name};
+    seen[base].count++;
+  });
+  Object.keys(seen).forEach(function(k){
+    var s=seen[k];
+    lines.push('• '+k+' — '+s.count+' row(s) — '+s.name+' — by '+s.by+' — '+s.at);
+  });
+  alert(lines.join('\n'));
+}
+
+// ═══ MONTH FILTER ════════════════════════════════════════
+function populateMonthSel(){
+  var sel=document.getElementById('month-sel');
+  if(!sel)return;
+  // Collect all available year-months from all data sources
+  var months={};
+  var addRecs=function(recs){
+    (recs||[]).forEach(function(r){
+      if(r.date){var ym=r.date.slice(0,7);if(!months[ym])months[ym]=r.date;else if(r.date>months[ym])months[ym]=r.date;}
+    });
+  };
+  if(FD.sales_dump)addRecs(FD.sales_dump.recs);
+  if(FD.dsr&&FD.dsr.hm)addRecs(FD.dsr.hm.recs);
+  if(FD.daily_tracker)addRecs(FD.daily_tracker.recs);
+  var sorted=Object.keys(months).sort().reverse();
+  // Rebuild options
+  sel.innerHTML='<option value="">Latest</option>';
+  var MON_=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  sorted.forEach(function(ym){
+    var parts=ym.split('-');
+    var label=MON_[parseInt(parts[1])-1]+' '+parts[0];
+    var opt=document.createElement('option');
+    opt.value=months[ym]; // last available date in that month
+    opt.textContent=label;
+    if(SEL_DATE&&SEL_DATE.startsWith(ym))opt.selected=true;
+    sel.appendChild(opt);
+  });
+}
+function setSelMonth(val){
+  SEL_DATE=val||null;
+  M=compute(FD);
+  if(M){updateHdr();render();}
+  var label=val?document.getElementById('month-sel').options[document.getElementById('month-sel').selectedIndex].text:'Latest';
+  showToast('Showing: '+label);
 }
 </script>
 </body>
